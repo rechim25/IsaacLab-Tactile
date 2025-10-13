@@ -167,46 +167,48 @@ class Se3SpaceMouse(DeviceBase):
         """Listener thread that keeps pulling new messages."""
         # keep running
         while True:
-            # read the device data
-            if self._device_name == "3Dconnexion Universal Receiver":
-                data = self._device.read(7 + 6)
-            else:
-                data = self._device.read(7)
-            if data is not None:
-                # readings from 6-DoF sensor
-                if self._device_name == "3Dconnexion Universal Receiver":
-                    if data[0] == 1:
-                        self._delta_pos[1] = self.pos_sensitivity * convert_buffer(data[1], data[2])
-                        self._delta_pos[0] = self.pos_sensitivity * convert_buffer(data[3], data[4])
-                        self._delta_pos[2] = self.pos_sensitivity * convert_buffer(data[5], data[6]) * -1.0
+            # Read a generous number of bytes to catch all report types
+            data = self._device.read(64)
+            if not data:
+                continue
 
-                        self._delta_rot[1] = self.rot_sensitivity * convert_buffer(data[1 + 6], data[2 + 6])
-                        self._delta_rot[0] = self.rot_sensitivity * convert_buffer(data[3 + 6], data[4 + 6])
-                        self._delta_rot[2] = self.rot_sensitivity * convert_buffer(data[5 + 6], data[6 + 6]) * -1.0
-                else:
-                    if data[0] == 1:
-                        self._delta_pos[1] = self.pos_sensitivity * convert_buffer(data[1], data[2])
-                        self._delta_pos[0] = self.pos_sensitivity * convert_buffer(data[3], data[4])
-                        self._delta_pos[2] = self.pos_sensitivity * convert_buffer(data[5], data[6]) * -1.0
-                    elif data[0] == 2 and not self._read_rotation:
-                        self._delta_rot[1] = self.rot_sensitivity * convert_buffer(data[1], data[2])
-                        self._delta_rot[0] = self.rot_sensitivity * convert_buffer(data[3], data[4])
-                        self._delta_rot[2] = self.rot_sensitivity * convert_buffer(data[5], data[6]) * -1.0
-                # readings from the side buttons
-                if data[0] == 3:
-                    # press left button
-                    if data[1] == 1:
-                        # close gripper
-                        self._close_gripper = not self._close_gripper
-                        # additional callbacks
-                        if "L" in self._additional_callbacks:
-                            self._additional_callbacks["L"]()
-                    # right button is for reset
-                    if data[1] == 2:
-                        # reset layer
-                        self.reset()
-                        # additional callbacks
-                        if "R" in self._additional_callbacks:
-                            self._additional_callbacks["R"]()
-                    if data[1] == 3:
-                        self._read_rotation = not self._read_rotation
+            rid = data[0]
+            n = len(data)
+
+            # Debug — optional
+            # print(f"RID={rid} len={n} RAW={data}")
+
+            # --- 6-DoF motion ---
+            if rid == 1:
+                if n >= 13:
+                    # Combined translation + rotation (13-byte report)
+                    self._delta_pos[1] = self.pos_sensitivity * convert_buffer(data[1], data[2])
+                    self._delta_pos[0] = self.pos_sensitivity * convert_buffer(data[3], data[4])
+                    self._delta_pos[2] = self.pos_sensitivity * convert_buffer(data[5], data[6]) * -1.0
+
+                    self._delta_rot[1] = self.rot_sensitivity * convert_buffer(data[7], data[8])
+                    self._delta_rot[0] = self.rot_sensitivity * convert_buffer(data[9], data[10])
+                    self._delta_rot[2] = self.rot_sensitivity * convert_buffer(data[11], data[12]) * -1.0
+                elif n >= 7:
+                    # Translation-only report
+                    self._delta_pos[1] = self.pos_sensitivity * convert_buffer(data[1], data[2])
+                    self._delta_pos[0] = self.pos_sensitivity * convert_buffer(data[3], data[4])
+                    self._delta_pos[2] = self.pos_sensitivity * convert_buffer(data[5], data[6]) * -1.0
+
+            elif rid == 2:
+                # Separate rotation-only report (7-byte format)
+                self._delta_rot[1] = self.rot_sensitivity * convert_buffer(data[1], data[2])
+                self._delta_rot[0] = self.rot_sensitivity * convert_buffer(data[3], data[4])
+                self._delta_rot[2] = self.rot_sensitivity * convert_buffer(data[5], data[6]) * -1.0
+
+            elif rid == 3:
+                # Button press events
+                if data[1] == 1:
+                    self._close_gripper = not self._close_gripper
+                    if "L" in self._additional_callbacks:
+                        self._additional_callbacks["L"]()
+                elif data[1] == 2:
+                    self.reset()
+                    if "R" in self._additional_callbacks:
+                        self._additional_callbacks["R"]()
+

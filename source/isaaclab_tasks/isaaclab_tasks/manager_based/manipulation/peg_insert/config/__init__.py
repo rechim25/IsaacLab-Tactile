@@ -3,7 +3,5 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Manipulation environments for fixed-arm robots."""
+"""Configuration for the Peg Insert manipulation environment."""
 
-from .peg_insert import *  # noqa
-from .reach import *  # noqa

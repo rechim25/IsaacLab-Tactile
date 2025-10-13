@@ -187,7 +187,7 @@ def main() -> None:
                 )
             elif args_cli.teleop_device.lower() == "spacemouse":
                 teleop_interface = Se3SpaceMouse(
-                    Se3SpaceMouseCfg(pos_sensitivity=0.05 * sensitivity, rot_sensitivity=0.05 * sensitivity)
+                    Se3SpaceMouseCfg(pos_sensitivity=0.05 * sensitivity, rot_sensitivity=0.3 * sensitivity)
                 )
             elif args_cli.teleop_device.lower() == "gamepad":
                 teleop_interface = Se3Gamepad(
