@@ -57,7 +57,7 @@ def object_position_in_robot_root_frame(
     # Transform object position to robot's root frame
     robot_quat_w = robot.data.root_quat_w
     obj_pos_rel = obj_pos_w - robot_pos_w
-    obj_pos_b = math_utils.quat_rotate_inverse(robot_quat_w, obj_pos_rel)
+    obj_pos_b = math_utils.quat_apply_inverse(robot_quat_w, obj_pos_rel)
     
     return obj_pos_b
 

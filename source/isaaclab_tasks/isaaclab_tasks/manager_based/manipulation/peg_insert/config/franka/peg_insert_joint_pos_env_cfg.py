@@ -4,7 +4,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.envs.mdp.actions import BinaryJointPositionActionCfg, JointPositionActionCfg
-from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.sensors import FrameTransformerCfg, CameraCfg
+import isaaclab.sim as sim_utils
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
 
@@ -51,6 +52,50 @@ class FrankaPegInsertEnvCfg(PegInsertEnvCfg):
                     ),
                 ),
             ],
+        )
+
+        # Add a wrist-mounted camera on the Franka end-effector
+        self.scene.wrist_cam = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/panda_hand/wrist_cam",
+            update_period=0.0,
+            height=84,
+            width=84,
+            data_types=["rgb", "distance_to_image_plane"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=24.0,
+                focus_distance=400.0,
+                horizontal_aperture=20.955,
+                # smaller near plane so fingers aren't clipped
+                clipping_range=(0.01, 2.0),
+            ),
+            offset=CameraCfg.OffsetCfg(
+                # pull slightly closer and higher for better finger visibility
+                pos=(0.11, 0.0, -0.12),
+                rot=(-0.70614, 0.03701, 0.03701, -0.70614),
+                convention="ros",
+            ),
+        )
+
+        # Add a fixed table camera matching the stack visuomotor defaults
+        self.scene.table_cam = CameraCfg(
+            prim_path="{ENV_REGEX_NS}/table_cam",
+            update_period=0.0,
+            height=84,
+            width=84,
+            data_types=["rgb", "distance_to_image_plane"],
+            spawn=sim_utils.PinholeCameraCfg(
+                # widen FOV a bit to cover more scene
+                focal_length=18.0,
+                focus_distance=400.0,
+                horizontal_aperture=20.955,
+                clipping_range=(0.1, 2.0),
+            ),
+            offset=CameraCfg.OffsetCfg(
+                # lift and look slightly more downward
+                pos=(1.0, 0.0, 0.6),
+                rot=(0.23912, -0.66446, -0.66446, 0.23912),
+                convention="ros",
+            ),
         )
 
 

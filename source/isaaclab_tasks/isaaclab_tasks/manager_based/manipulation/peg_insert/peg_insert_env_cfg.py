@@ -162,8 +162,22 @@ class ObservationsCfg:
             self.enable_corruption = False
             self.concatenate_terms = True
 
+    @configclass
+    class RGBCameraPolicyCfg(ObsGroup):
+        """Image observations group (not concatenated)."""
+
+        wrist_cam = ObsTerm(
+            func=mdp.image,
+            params={"sensor_cfg": SceneEntityCfg("wrist_cam"), "data_type": "rgb", "normalize": False},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = False
+
     # observation groups
     policy: PolicyCfg = PolicyCfg()
+    rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
 
 
 @configclass
@@ -197,27 +211,38 @@ class EventCfg:
         },
     )
 
-    # Reset hole to default position on table (close to peg for easy task)
+    # Reset hole pose from a discrete preset set (for diverse demos)
     reset_hole_pose = EventTerm(
-        func=mdp.reset_object_to_default_pose,
+        func=mdp.set_pose_from_discrete_set,
         mode="reset",
         params={
-            "default_position": [0.55, 0.0, 0.0],  # On table surface, aligned with peg
-            "default_orientation": [1.0, 0.0, 0.0, 0.0],
+            # Keep hole near center/positive-Y so it's not overlapping with peg presets
+            "poses_xyz_yaw": [
+                (0.55,  0.00, 0.0, 0.0),
+                (0.58,  0.06, 0.0, 0.2),
+                (0.52,  0.04, 0.0, -0.2),
+            ],
             "asset_cfg": SceneEntityCfg("hole"),
         },
     )
 
-    # Reset peg to default position (close to hole)
+    # Randomize peg position uniformly within ranges each reset
     reset_peg_pose = EventTerm(
-        func=mdp.reset_object_to_default_pose,
+        func=mdp.set_pose_from_discrete_set,
         mode="reset",
         params={
-            "default_position": [0.55, -0.1, 0.0203],  # On table surface, close to hole
-            "default_orientation": [1.0, 0.0, 0.0, 0.0],
+            # Peg presets on negative-Y side; avoids immediate success/stack collisions
+            "poses_xyz_yaw": [
+                (0.55, -0.10, 0.0203, 0.0),
+                (0.50, -0.08, 0.0203, 0.2),
+                (0.60, -0.12, 0.0203, -0.2),
+            ],
             "asset_cfg": SceneEntityCfg("peg"),
         },
     )
+
+    # Note: We intentionally do not randomize robot joints at reset to keep
+    # a consistent end-effector orientation and gripper open state.
 
 
 @configclass
