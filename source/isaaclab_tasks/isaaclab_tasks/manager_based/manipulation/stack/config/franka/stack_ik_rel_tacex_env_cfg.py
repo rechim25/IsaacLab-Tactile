@@ -20,6 +20,9 @@ References:
 
 import isaaclab.sim as sim_utils
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
+from isaaclab.devices.device_base import DevicesCfg
+from isaaclab.devices.keyboard import Se3KeyboardCfg
+from isaaclab.devices.spacemouse import Se3SpaceMouseCfg
 from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -358,3 +361,17 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
 
         # List of image observations
         self.image_obs_list = ["table_cam", "wrist_cam"]
+
+        # Configure teleoperation devices (SpaceMouse and Keyboard)
+        self.teleop_devices = DevicesCfg(
+            devices={
+                "spacemouse": Se3SpaceMouseCfg(
+                    pos_sensitivity=0.05,
+                    rot_sensitivity=0.3,
+                ),
+                "keyboard": Se3KeyboardCfg(
+                    pos_sensitivity=0.05,
+                    rot_sensitivity=0.05,
+                ),
+            }
+        )
