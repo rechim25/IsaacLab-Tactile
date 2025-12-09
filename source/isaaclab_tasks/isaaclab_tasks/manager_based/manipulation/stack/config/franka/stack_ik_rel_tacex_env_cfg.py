@@ -258,7 +258,7 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
                 sensor_camera_cfg=GelSightMiniCfg.SensorCameraCfg(
                     prim_path_appendix="/Camera",
                     update_period=0,
-                    resolution=(64, 64),
+                    resolution=(256, 256),
                     data_types=["depth"],
                     clipping_range=(0.015, 0.029),
                 ),
@@ -269,7 +269,7 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
                     gelpad_height=GelSightMiniCfg().gelpad_dimensions.height,
                     gelpad_to_camera_min_distance=0.024,
                     with_shadow=False,
-                    tactile_img_res=(64, 64),
+                    tactile_img_res=(256, 256),
                     device="cuda",
                 ),
                 marker_motion_sim_cfg=None,  # Disable FOTS for speed
@@ -282,7 +282,7 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
                 sensor_camera_cfg=GelSightMiniCfg.SensorCameraCfg(
                     prim_path_appendix="/Camera",
                     update_period=0,
-                    resolution=(64, 64),
+                    resolution=(256, 256),
                     data_types=["depth"],
                     clipping_range=(0.015, 0.029),
                 ),
@@ -293,7 +293,7 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
                     gelpad_height=GelSightMiniCfg().gelpad_dimensions.height,
                     gelpad_to_camera_min_distance=0.024,
                     with_shadow=False,
-                    tactile_img_res=(64, 64),
+                    tactile_img_res=(256, 256),
                     device="cuda",
                 ),
                 marker_motion_sim_cfg=None,  # Disable FOTS for speed
@@ -319,8 +319,8 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
         self.scene.wrist_cam = CameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/panda_hand/wrist_cam",
             update_period=0.0,
-            height=84,
-            width=84,
+            height=256,
+            width=256,
             data_types=["rgb", "distance_to_image_plane"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=24.0,
@@ -339,8 +339,8 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
         self.scene.table_cam = CameraCfg(
             prim_path="{ENV_REGEX_NS}/table_cam",
             update_period=0.0,
-            height=84,
-            width=84,
+            height=256,
+            width=256,
             data_types=["rgb", "distance_to_image_plane"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=18.0,
