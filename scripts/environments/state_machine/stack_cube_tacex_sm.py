@@ -231,6 +231,15 @@ def main():
     print(f"[INFO] Sensors: wrist_cam={has_wrist_cam}, table_cam={has_table_cam}, "
           f"gsmini_left={has_gsmini_left}, gsmini_right={has_gsmini_right}")
     
+    # Debug: print available sensor data keys
+    if has_gsmini_left:
+        sensor = env.scene.sensors["gsmini_left"]
+        print(f"[DEBUG] gsmini_left data.output keys: {list(sensor.data.output.keys()) if sensor.data.output else 'None'}")
+        if sensor.data.output:
+            for k, v in sensor.data.output.items():
+                if v is not None:
+                    print(f"[DEBUG]   {k}: shape={v.shape}, dtype={v.dtype}, min={v.min():.3f}, max={v.max():.3f}")
+    
     obs, _ = env.reset()
     sm.reset()
     demo_count = 0
@@ -271,22 +280,41 @@ def main():
                         # Camera data
                         if has_wrist_cam:
                             rgb = env.scene.sensors["wrist_cam"].data.output.get("rgb")
-                            if rgb is not None:
-                                step_data["rgb_wrist"] = rgb[i].cpu().numpy().astype(np.uint8)
+                            if rgb is not None and rgb.numel() > 0:
+                                rgb_np = rgb[i].cpu().numpy()
+                                if rgb_np.dtype in [np.float32, np.float64]:
+                                    rgb_np = (rgb_np * 255).astype(np.uint8) if rgb_np.max() <= 1.0 else rgb_np.astype(np.uint8)
+                                step_data["rgb_wrist"] = rgb_np
                         if has_table_cam:
                             rgb = env.scene.sensors["table_cam"].data.output.get("rgb")
-                            if rgb is not None:
-                                step_data["rgb_table"] = rgb[i].cpu().numpy().astype(np.uint8)
+                            if rgb is not None and rgb.numel() > 0:
+                                rgb_np = rgb[i].cpu().numpy()
+                                if rgb_np.dtype in [np.float32, np.float64]:
+                                    rgb_np = (rgb_np * 255).astype(np.uint8) if rgb_np.max() <= 1.0 else rgb_np.astype(np.uint8)
+                                step_data["rgb_table"] = rgb_np
                         
                         # Tactile data
                         if has_gsmini_left:
                             tac = env.scene.sensors["gsmini_left"].data.output.get("tactile_rgb")
-                            if tac is not None:
-                                step_data["tactile_left"] = tac[i].cpu().numpy().astype(np.uint8)
+                            if tac is not None and tac.numel() > 0:
+                                tac_np = tac[i].cpu().numpy()
+                                # Handle float [0,1] or [0,255] data
+                                if tac_np.dtype in [np.float32, np.float64]:
+                                    if tac_np.max() <= 1.0:
+                                        tac_np = (tac_np * 255).astype(np.uint8)
+                                    else:
+                                        tac_np = tac_np.astype(np.uint8)
+                                step_data["tactile_left"] = tac_np
                         if has_gsmini_right:
                             tac = env.scene.sensors["gsmini_right"].data.output.get("tactile_rgb")
-                            if tac is not None:
-                                step_data["tactile_right"] = tac[i].cpu().numpy().astype(np.uint8)
+                            if tac is not None and tac.numel() > 0:
+                                tac_np = tac[i].cpu().numpy()
+                                if tac_np.dtype in [np.float32, np.float64]:
+                                    if tac_np.max() <= 1.0:
+                                        tac_np = (tac_np * 255).astype(np.uint8)
+                                    else:
+                                        tac_np = tac_np.astype(np.uint8)
+                                step_data["tactile_right"] = tac_np
                         
                         recorder.add_step(i, step_data)
             
