@@ -135,8 +135,129 @@ def plot_trajectory(path):
         plt.show()
 
 
+def plot_forces(path):
+    """Plot pseudo-force data from tactile sensors."""
+    import matplotlib.pyplot as plt
+    
+    with h5py.File(path, "r") as f:
+        if "data" not in f or len(f["data"].keys()) == 0:
+            print("No data to plot")
+            return
+        
+        demo = f["data"][list(f["data"].keys())[0]]
+        
+        # Check for force data
+        force_keys = [k for k in demo.keys() if "force" in k.lower()]
+        if not force_keys:
+            print("[No force data to plot]")
+            return
+        
+        print(f"[Plotting forces: {force_keys}]")
+        
+        # Determine layout
+        n_plots = len(force_keys)
+        n_cols = min(2, n_plots)
+        n_rows = (n_plots + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 4 * n_rows), squeeze=False)
+        
+        colors = {'Fx': 'r', 'Fy': 'g', 'Fz': 'b'}
+        
+        for idx, key in enumerate(force_keys):
+            row, col = idx // n_cols, idx % n_cols
+            ax = axes[row, col]
+            
+            force_data = demo[key][:]
+            steps = np.arange(len(force_data))
+            
+            # Plot each force component
+            if force_data.ndim == 2 and force_data.shape[1] >= 3:
+                ax.plot(steps, force_data[:, 0], colors['Fx'], label='Fx (shear X)', alpha=0.8)
+                ax.plot(steps, force_data[:, 1], colors['Fy'], label='Fy (shear Y)', alpha=0.8)
+                ax.plot(steps, force_data[:, 2], colors['Fz'], label='Fz (normal)', alpha=0.8)
+                
+                # Add magnitude
+                magnitude = np.linalg.norm(force_data, axis=1)
+                ax.plot(steps, magnitude, 'k--', label='|F| (magnitude)', alpha=0.5)
+            else:
+                ax.plot(steps, force_data, label=key)
+            
+            ax.set_title(key.replace('_', ' ').title())
+            ax.set_xlabel("Step")
+            ax.set_ylabel("Pseudo-Force (a.u.)")
+            ax.legend(loc='upper right', fontsize=8)
+            ax.grid(True, alpha=0.3)
+        
+        # Hide unused subplots
+        for idx in range(n_plots, n_rows * n_cols):
+            row, col = idx // n_cols, idx % n_cols
+            axes[row, col].set_visible(False)
+        
+        plt.tight_layout()
+        plt.savefig("hdf5_forces.png", dpi=150)
+        print(f"[Saved force plot to hdf5_forces.png]")
+        plt.show()
+
+
+def _render_force_plot_single(ax, force_data, current_frame, num_frames, title, colors):
+    """Render a single force plot on given axes."""
+    if force_data is None:
+        ax.text(0.5, 0.5, 'No Data', ha='center', va='center', fontsize=10)
+        ax.set_title(title, fontsize=9)
+        return
+    
+    steps = np.arange(num_frames)
+    labels = ['Fx (shear)', 'Fy (shear)', 'Fz (normal)']
+    
+    # Plot full trajectory faded
+    for i, (color, label) in enumerate(zip(colors, labels)):
+        ax.plot(steps, force_data[:, i], color=color, alpha=0.2, linewidth=1)
+    
+    # Plot up to current frame
+    for i, (color, label) in enumerate(zip(colors, labels)):
+        ax.plot(steps[:current_frame+1], force_data[:current_frame+1, i], 
+                color=color, linewidth=1.5, label=label)
+        ax.scatter([current_frame], [force_data[current_frame, i]], 
+                   c=color, s=30, zorder=5)
+    
+    ax.axvline(x=current_frame, color='gray', linestyle='--', alpha=0.5)
+    ax.set_xlim(0, num_frames)
+    ax.set_xlabel('Step', fontsize=7)
+    ax.set_ylabel('Force', fontsize=7)
+    ax.set_title(title, fontsize=9)
+    ax.legend(loc='upper right', fontsize=6)
+    ax.grid(True, alpha=0.3)
+    ax.tick_params(labelsize=6)
+
+
+def _render_force_plots(force_left, force_right, current_frame, num_frames, size=(640, 240)):
+    """Render two force plots side-by-side (left and right finger)."""
+    import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.use('Agg')
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(size[0]/100, size[1]/100), dpi=100)
+    
+    colors_left = ['#e74c3c', '#2ecc71', '#3498db']   # Red, Green, Blue
+    colors_right = ['#c0392b', '#27ae60', '#2980b9']  # Darker variants
+    
+    _render_force_plot_single(ax1, force_left, current_frame, num_frames, 
+                              'Left Finger Force', colors_left)
+    _render_force_plot_single(ax2, force_right, current_frame, num_frames, 
+                              'Right Finger Force', colors_right)
+    
+    fig.tight_layout(pad=0.5)
+    
+    # Convert to image
+    fig.canvas.draw()
+    img = np.array(fig.canvas.buffer_rgba())[:, :, :3]
+    plt.close(fig)
+    
+    return img
+
+
 def create_video(path, output_video="demo_video.mp4", demo_idx=0, fps=30):
-    """Create split-screen video: table RGB, wrist RGB, tactile left, tactile right."""
+    """Create split-screen video: table RGB, wrist RGB, tactile left, tactile right, force plot."""
     import cv2
     
     with h5py.File(path, "r") as f:
@@ -162,6 +283,14 @@ def create_video(path, output_video="demo_video.mp4", demo_idx=0, fps=30):
                 streams[key] = demo[key][:]
                 print(f"  Found {key}: {streams[key].shape}")
         
+        # Check for force data
+        force_left = demo["force_geometric_left"][:] if "force_geometric_left" in demo else None
+        force_right = demo["force_geometric_right"][:] if "force_geometric_right" in demo else None
+        has_force = force_left is not None or force_right is not None
+        
+        if has_force:
+            print(f"  Found force data: left={force_left is not None}, right={force_right is not None}")
+        
         if not streams:
             print("No video streams found")
             return
@@ -170,19 +299,21 @@ def create_video(path, output_video="demo_video.mp4", demo_idx=0, fps=30):
         num_frames = min(s.shape[0] for s in streams.values())
         num_streams = len(streams)
         
-        # Calculate grid layout (2x2 or smaller)
-        if num_streams == 1:
-            grid = (1, 1)
-        elif num_streams == 2:
+        # Calculate grid layout for video streams only
+        if num_streams <= 2:
             grid = (1, 2)
         elif num_streams <= 4:
             grid = (2, 2)
-        else:
+        elif num_streams <= 6:
             grid = (2, 3)
+        else:
+            grid = (3, 3)
         
         # Target size per panel
         panel_size = (320, 240)
-        frame_size = (panel_size[0] * grid[1], panel_size[1] * grid[0])
+        # Add extra row for force plots if present
+        num_rows = grid[0] + (1 if has_force else 0)
+        frame_size = (panel_size[0] * grid[1], panel_size[1] * num_rows)
         
         # Setup video writer
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -197,6 +328,7 @@ def create_video(path, output_video="demo_video.mp4", demo_idx=0, fps=30):
             # Create composite frame
             composite = np.zeros((frame_size[1], frame_size[0], 3), dtype=np.uint8)
             
+            # Draw image streams
             for i, ((key, data), label) in enumerate(zip(stream_list, label_list)):
                 row, col = i // grid[1], i % grid[1]
                 y_start, x_start = row * panel_size[1], col * panel_size[0]
@@ -219,6 +351,20 @@ def create_video(path, output_video="demo_video.mp4", demo_idx=0, fps=30):
                 
                 # Place in composite
                 composite[y_start:y_start + panel_size[1], x_start:x_start + panel_size[0]] = img
+            
+            # Draw force plots (spans full bottom row)
+            if has_force:
+                row = (len(stream_list) + grid[1] - 1) // grid[1]  # Next row
+                y_start = row * panel_size[1]
+                
+                # Render two plots side-by-side spanning full width
+                full_width = panel_size[0] * grid[1]
+                force_img = _render_force_plots(force_left, force_right, frame_idx, num_frames, 
+                                                (full_width, panel_size[1]))
+                force_img = cv2.cvtColor(force_img, cv2.COLOR_RGB2BGR)
+                force_img = cv2.resize(force_img, (full_width, panel_size[1]))
+                
+                composite[y_start:y_start + panel_size[1], 0:full_width] = force_img
             
             out.write(composite)
         
@@ -249,6 +395,7 @@ if __name__ == "__main__":
     parser.add_argument("--samples", type=int, default=3, help="Number of demos to show")
     parser.add_argument("--plot", action="store_true", help="Plot tactile/camera images")
     parser.add_argument("--trajectory", action="store_true", help="Plot action/joint trajectories")
+    parser.add_argument("--forces", action="store_true", help="Plot pseudo-force data")
     parser.add_argument("--video", action="store_true", help="Create split-screen video (first demo)")
     parser.add_argument("--video-all", action="store_true", help="Create videos for all demos")
     parser.add_argument("--video-output", type=str, default="demo_video.mp4", help="Output video path")
@@ -260,6 +407,9 @@ if __name__ == "__main__":
     
     if args.trajectory:
         plot_trajectory(args.file)
+    
+    if args.forces:
+        plot_forces(args.file)
     
     if args.video:
         create_video(args.file, args.video_output, args.demo_idx, args.fps)

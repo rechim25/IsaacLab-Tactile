@@ -178,6 +178,40 @@ class TacExObservationsCfg:
             self.concatenate_terms = True
 
     @configclass
+    class TactileForceCfg(ObsGroup):
+        """TacEx pseudo-force observations derived from tactile data.
+
+        Provides 3D pseudo-force vectors computed from gelpad deformation.
+        Two methods available:
+        - Geometric: from height_map (pure geometry)
+        - Photometric: from tactile_rgb (optical gradients)
+        """
+
+        # Geometric pseudo-force (from height_map deformation)
+        force_geometric_left = ObsTerm(
+            func=mdp.gelsight_pseudo_force_geometric,
+            params={"sensor_cfg": SceneEntityCfg("gsmini_left")},
+        )
+        force_geometric_right = ObsTerm(
+            func=mdp.gelsight_pseudo_force_geometric,
+            params={"sensor_cfg": SceneEntityCfg("gsmini_right")},
+        )
+
+        # Photometric pseudo-force (from tactile_rgb gradients)
+        force_photometric_left = ObsTerm(
+            func=mdp.gelsight_pseudo_force_photometric,
+            params={"sensor_cfg": SceneEntityCfg("gsmini_left")},
+        )
+        force_photometric_right = ObsTerm(
+            func=mdp.gelsight_pseudo_force_photometric,
+            params={"sensor_cfg": SceneEntityCfg("gsmini_right")},
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    @configclass
     class SubtaskCfg(ObsGroup):
         """Subtask completion observations (for hierarchical/skill learning)."""
 
@@ -215,6 +249,7 @@ class TacExObservationsCfg:
     vision: VisionCfg = VisionCfg()
     tactile: TactileCfg = TactileCfg()
     tactile_state: TactileStateCfg = TactileStateCfg()
+    tactile_force: TactileForceCfg = TactileForceCfg()
     subtask_terms: SubtaskCfg = SubtaskCfg()
 
 
@@ -319,8 +354,8 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
         self.scene.wrist_cam = CameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/panda_hand/wrist_cam",
             update_period=0.0,
-            height=256,
-            width=256,
+            height=224,
+            width=224,
             data_types=["rgb", "distance_to_image_plane"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=24.0,
@@ -339,8 +374,8 @@ class FrankaCubeStackTacExEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCfg):
         self.scene.table_cam = CameraCfg(
             prim_path="{ENV_REGEX_NS}/table_cam",
             update_period=0.0,
-            height=256,
-            width=256,
+            height=224,
+            width=224,
             data_types=["rgb", "distance_to_image_plane"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=18.0,

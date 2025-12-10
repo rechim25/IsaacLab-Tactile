@@ -35,6 +35,77 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 
+def _compute_pseudo_force_geometric(height_map: torch.Tensor) -> torch.Tensor:
+    """Compute normalized 3D pseudo-force from height map (geometric method).
+    
+    Args:
+        height_map: Height map tensor of shape (H, W) in mm.
+        
+    Returns:
+        Normalized pseudo-force vector of shape (3,) as [Fx, Fy, Fz].
+        Fx, Fy in [-1, 1] (shear direction), Fz in [0, 1] (normal force).
+    """
+    device = height_map.device
+    baseline = height_map.max()
+    deformation = (baseline - height_map).clamp(min=0)
+    
+    # Normal force (Fz) - total deformation
+    Fz_raw = deformation.sum()
+    
+    # Shear forces (Fx, Fy) from center of pressure offset
+    H, W = height_map.shape
+    y_coords = torch.linspace(-1, 1, H, device=device).view(H, 1)
+    x_coords = torch.linspace(-1, 1, W, device=device).view(1, W)
+    
+    total_def = Fz_raw + 1e-6
+    # CoP offset already in [-1, 1] from normalized coords
+    Fx_raw = (deformation * x_coords).sum() / total_def
+    Fy_raw = (deformation * y_coords).sum() / total_def
+    
+    # Normalize each component
+    Fx = Fx_raw.clamp(-1, 1)
+    Fy = Fy_raw.clamp(-1, 1)
+    
+    # Fz: normalize by estimated max deformation
+    max_deformation = H * W * 0.5  # ~0.5mm max depth per pixel
+    Fz = (Fz_raw / max_deformation).clamp(0, 1)
+    
+    return torch.stack([Fx, Fy, Fz])
+
+
+def _compute_pseudo_force_photometric(tactile_rgb: torch.Tensor) -> torch.Tensor:
+    """Compute 3D pseudo-force from tactile RGB (photometric method).
+    
+    RGB channels encode surface gradients in GelSight sensors.
+    
+    Args:
+        tactile_rgb: Tactile RGB tensor of shape (H, W, 3) in [0, 1].
+        
+    Returns:
+        Pseudo-force vector of shape (3,) as [Fx, Fy, Fz].
+    """
+    # Center around zero (neutral ~0.5)
+    rgb_centered = tactile_rgb - 0.5
+    
+    # R channel → X gradient (shear)
+    # G channel → Y gradient (shear)
+    grad_x = rgb_centered[..., 0].mean()
+    grad_y = rgb_centered[..., 1].mean()
+    
+    # Contact intensity from deviation
+    rgb_deviation = rgb_centered.abs().mean()
+    
+    # Scale factors
+    shear_scale = 10.0
+    normal_scale = 100.0
+    
+    Fx = grad_x * rgb_deviation * shear_scale
+    Fy = grad_y * rgb_deviation * normal_scale
+    Fz = rgb_deviation * normal_scale
+    
+    return torch.stack([Fx, Fy, Fz])
+
+
 class StackCubeStateMachine:
     def __init__(self, dt: float, num_envs: int, device):
         self.dt, self.num_envs, self.device = float(dt), num_envs, device
@@ -163,6 +234,10 @@ class DataRecorder:
             "rgb_table": [],
             "tactile_left": [],
             "tactile_right": [],
+            "force_geometric_left": [],
+            "force_geometric_right": [],
+            "force_photometric_left": [],
+            "force_photometric_right": [],
         }
     
     def add_step(self, env_id: int, data: dict):
@@ -293,12 +368,11 @@ def main():
                                     rgb_np = (rgb_np * 255).astype(np.uint8) if rgb_np.max() <= 1.0 else rgb_np.astype(np.uint8)
                                 step_data["rgb_table"] = rgb_np
                         
-                        # Tactile data
+                        # Tactile data (RGB images)
                         if has_gsmini_left:
                             tac = env.scene.sensors["gsmini_left"].data.output.get("tactile_rgb")
                             if tac is not None and tac.numel() > 0:
                                 tac_np = tac[i].cpu().numpy()
-                                # Handle float [0,1] or [0,255] data
                                 if tac_np.dtype in [np.float32, np.float64]:
                                     if tac_np.max() <= 1.0:
                                         tac_np = (tac_np * 255).astype(np.uint8)
@@ -315,6 +389,26 @@ def main():
                                     else:
                                         tac_np = tac_np.astype(np.uint8)
                                 step_data["tactile_right"] = tac_np
+                        
+                        # Tactile pseudo-force - GEOMETRIC (from height_map)
+                        if has_gsmini_left:
+                            hmap = env.scene.sensors["gsmini_left"].data.output.get("height_map")
+                            if hmap is not None and hmap.numel() > 0:
+                                step_data["force_geometric_left"] = _compute_pseudo_force_geometric(hmap[i]).cpu().numpy()
+                        if has_gsmini_right:
+                            hmap = env.scene.sensors["gsmini_right"].data.output.get("height_map")
+                            if hmap is not None and hmap.numel() > 0:
+                                step_data["force_geometric_right"] = _compute_pseudo_force_geometric(hmap[i]).cpu().numpy()
+                        
+                        # Tactile pseudo-force - PHOTOMETRIC (from tactile_rgb)
+                        if has_gsmini_left:
+                            tac_rgb = env.scene.sensors["gsmini_left"].data.output.get("tactile_rgb")
+                            if tac_rgb is not None and tac_rgb.numel() > 0:
+                                step_data["force_photometric_left"] = _compute_pseudo_force_photometric(tac_rgb[i]).cpu().numpy()
+                        if has_gsmini_right:
+                            tac_rgb = env.scene.sensors["gsmini_right"].data.output.get("tactile_rgb")
+                            if tac_rgb is not None and tac_rgb.numel() > 0:
+                                step_data["force_photometric_right"] = _compute_pseudo_force_photometric(tac_rgb[i]).cpu().numpy()
                         
                         recorder.add_step(i, step_data)
             
