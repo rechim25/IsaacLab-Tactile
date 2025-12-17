@@ -6,4 +6,5 @@
 """Manipulation environments for fixed-arm robots."""
 
 from .peg_insert import *  # noqa
+from .pick_place_basket import *  # noqa
 from .reach import *  # noqa

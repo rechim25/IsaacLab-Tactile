@@ -113,9 +113,23 @@ class StackCubeStateMachine:
         self.sm_wait_time = torch.zeros(num_envs, device=device)
         self.des_ee_pose = torch.zeros(num_envs, 7, device=device)
         self.des_gripper_state = torch.ones(num_envs, device=device)
+        self.des_speed_scale = torch.ones(num_envs, device=device) * 3.0  # Per-env speed control
         self.approach_height, self.grasp_height = 0.12, 0.0
         self.stack_height_1, self.stack_height_2 = 0.05, 0.10
         self.threshold, self.speed_scale = 0.03, 3.0
+        # Tighter threshold for precise placement
+        self.place_threshold = 0.015
+        # Very tight threshold for final cube placement
+        self.final_place_threshold = 0.008
+        # Higher clearance for third cube to clear the 2-cube stack
+        self.high_clearance = 0.15  # Higher than stack_height_2 + cube_height + margin
+        # Intermediate hover height for final approach (above final placement)
+        self.final_hover_height = 0.03  # Hover 3cm above final position
+        # Release height offset - place cube slightly above target so it drops gently
+        self.release_offset = 0.005  # 1cm above calculated height to avoid pressing
+        # Speed scales (normal is 3.0)
+        self.slow_speed = 2.0  # Slightly slower for final approach
+        self.very_slow_speed = 1.8  # A bit slower for final descent
 
     def reset(self, env_ids=None):
         if env_ids is None: env_ids = range(self.num_envs)
@@ -125,7 +139,10 @@ class StackCubeStateMachine:
         self.sm_wait_time -= self.dt
         ee_pos, c1, c2, c3 = ee_pose[:, :3], c1_pose[:, :3], c2_pose[:, :3], c3_pose[:, :3]
         
-        for s in range(17):
+        # Reset speed to normal for all envs
+        self.des_speed_scale[:] = self.speed_scale
+        
+        for s in range(19):  # States 0-18
             mask = self.sm_state == s
             if not mask.any(): continue
             
@@ -153,58 +170,86 @@ class StackCubeStateMachine:
                 t = mask & (ee_pos[:, 2] > self.approach_height - 0.02) & (self.sm_wait_time <= 0)
                 self.sm_state[t], self.sm_wait_time[t] = 5, 0.1
             elif s == 5:
+                # Move precisely above cube_1 before descending
                 dp = c1.clone(); dp[:, 2] += self.approach_height
                 self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
-                t = mask & (torch.norm(ee_pos - dp, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
+                t = mask & (torch.norm(ee_pos - dp, dim=1) < self.place_threshold) & (self.sm_wait_time <= 0)
                 self.sm_state[t], self.sm_wait_time[t] = 6, 0.1
             elif s == 6:
-                dp = c1.clone(); dp[:, 2] += self.stack_height_1 + self.grasp_height
+                # Intermediate hover above placement - ensure XY alignment
+                self.des_speed_scale[mask] = self.slow_speed
+                dp = c1.clone(); dp[:, 2] += self.stack_height_1 + self.final_hover_height
                 self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
-                t = mask & (torch.norm(ee_pos - dp, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
+                t = mask & (torch.norm(ee_pos[:, :2] - dp[:, :2], dim=1) < self.final_place_threshold) & (self.sm_wait_time <= 0)
                 self.sm_state[t], self.sm_wait_time[t] = 7, 0.1
             elif s == 7:
-                self.des_gripper_state[mask] = 1.0
-                t = mask & (self.sm_wait_time <= 0); self.sm_state[t], self.sm_wait_time[t] = 8, 0.1
+                # Slow descent to placement height with release offset (don't press down)
+                self.des_speed_scale[mask] = self.very_slow_speed
+                dp = c1.clone(); dp[:, 2] += self.stack_height_1 + self.release_offset
+                self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
+                t = mask & (torch.norm(ee_pos - dp, dim=1) < self.place_threshold) & (self.sm_wait_time <= 0)
+                self.sm_state[t], self.sm_wait_time[t] = 8, 0.1
             elif s == 8:
+                # Release gripper for first cube
+                self.des_gripper_state[mask] = 1.0
+                t = mask & (self.sm_wait_time <= 0); self.sm_state[t], self.sm_wait_time[t] = 9, 0.2
+            elif s == 9:
+                # Lift back up after placing first cube
                 dp = c1.clone(); dp[:, 2] += self.approach_height
                 self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], 1.0
                 t = mask & (torch.norm(ee_pos - dp, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t], self.sm_wait_time[t] = 9, 0.1
-            elif s == 9:
+                self.sm_state[t], self.sm_wait_time[t] = 10, 0.1
+            elif s == 10:
+                # Move to cube_3 (green)
                 dp = c3.clone(); dp[:, 2] += self.approach_height
                 self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], 1.0
                 t = mask & (torch.norm(ee_pos - dp, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t], self.sm_wait_time[t] = 10, 0.15
-            elif s == 10:
+                self.sm_state[t], self.sm_wait_time[t] = 11, 0.15
+            elif s == 11:
+                # Lower to grasp cube_3
                 dp = c3.clone(); dp[:, 2] += self.grasp_height
                 self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], 1.0
                 t = mask & (torch.norm(ee_pos - dp, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t], self.sm_wait_time[t] = 11, 0.1
-            elif s == 11:
-                self.des_gripper_state[mask] = -1.0
-                t = mask & (self.sm_wait_time <= 0); self.sm_state[t], self.sm_wait_time[t] = 12, 0.1
+                self.sm_state[t], self.sm_wait_time[t] = 12, 0.1
             elif s == 12:
-                dp = ee_pos.clone(); dp[:, 2] = self.approach_height + self.stack_height_1
-                self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
-                t = mask & (ee_pos[:, 2] > self.approach_height + self.stack_height_1 - 0.02) & (self.sm_wait_time <= 0)
-                self.sm_state[t], self.sm_wait_time[t] = 13, 0.1
+                # Grasp cube_3
+                self.des_gripper_state[mask] = -1.0
+                t = mask & (self.sm_wait_time <= 0); self.sm_state[t], self.sm_wait_time[t] = 13, 0.1
             elif s == 13:
-                dp = c1.clone(); dp[:, 2] += self.approach_height + self.stack_height_1
+                # Lift cube_3 higher to clear the 2-cube stack
+                dp = ee_pos.clone(); dp[:, 2] = self.high_clearance
                 self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
-                t = mask & (torch.norm(ee_pos - dp, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
+                t = mask & (ee_pos[:, 2] > self.high_clearance - 0.02) & (self.sm_wait_time <= 0)
                 self.sm_state[t], self.sm_wait_time[t] = 14, 0.1
             elif s == 14:
-                dp = c1.clone(); dp[:, 2] += self.stack_height_2 + self.grasp_height
+                # Move above stack with high clearance to avoid collision
+                dp = c1.clone(); dp[:, 2] += self.high_clearance
                 self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
                 t = mask & (torch.norm(ee_pos - dp, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t], self.sm_wait_time[t] = 15, 0.1
+                self.sm_state[t], self.sm_wait_time[t] = 15, 0.15
             elif s == 15:
-                self.des_gripper_state[mask] = 1.0
-                t = mask & (self.sm_wait_time <= 0); self.sm_state[t], self.sm_wait_time[t] = 16, 0.5
+                # Slower approach to hover position above stack
+                self.des_speed_scale[mask] = self.slow_speed
+                dp = c1.clone(); dp[:, 2] += self.stack_height_2 + self.final_hover_height
+                self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
+                t = mask & (torch.norm(ee_pos[:, :2] - dp[:, :2], dim=1) < self.final_place_threshold) & (self.sm_wait_time <= 0)
+                self.sm_state[t], self.sm_wait_time[t] = 16, 0.1
             elif s == 16:
+                # Slow final descent - with release_offset to avoid pressing down
+                self.des_speed_scale[mask] = self.very_slow_speed
+                dp = c1.clone(); dp[:, 2] += self.stack_height_2 + self.release_offset
+                self.des_ee_pose[mask, :3], self.des_gripper_state[mask] = dp[mask], -1.0
+                t = mask & (torch.norm(ee_pos - dp, dim=1) < self.final_place_threshold) & (self.sm_wait_time <= 0)
+                self.sm_state[t], self.sm_wait_time[t] = 17, 0.1
+            elif s == 17:
+                # Release gripper
+                self.des_gripper_state[mask] = 1.0
+                t = mask & (self.sm_wait_time <= 0); self.sm_state[t], self.sm_wait_time[t] = 18, 0.3
+            elif s == 18:
+                # Done state
                 self.des_gripper_state[mask] = 1.0
         
-        return self.des_ee_pose.clone(), self.des_gripper_state.clone()
+        return self.des_ee_pose.clone(), self.des_gripper_state.clone(), self.des_speed_scale.clone()
 
 
 class DataRecorder:
@@ -334,15 +379,15 @@ def main():
             c3p = torch.cat([c3.data.root_pos_w - env.scene.env_origins, c3.data.root_quat_w], -1)
             ee_pose = torch.cat([ee.data.target_pos_w[:, 0] - env.scene.env_origins, ee.data.target_quat_w[:, 0]], -1)
             
-            # Compute action
-            des_pose, grip = sm.compute(ee_pose, c1p, c2p, c3p, default_quat)
-            delta = (des_pose[:, :3] - ee_pose[:, :3]) * sm.speed_scale
+            # Compute action with per-env speed scale
+            des_pose, grip, speed_scale = sm.compute(ee_pose, c1p, c2p, c3p, default_quat)
+            delta = (des_pose[:, :3] - ee_pose[:, :3]) * speed_scale.unsqueeze(-1)
             actions = torch.cat([delta, torch.zeros(env.num_envs, 3, device=env.device), grip.unsqueeze(-1)], -1)
             
             # Record data
             if recorder:
                 for i in range(env.num_envs):
-                    if sm.sm_state[i] < 16:  # Not done
+                    if sm.sm_state[i] < 18:  # Not done (state 18 is final)
                         step_data = {
                             "actions": actions[i].cpu().numpy(),
                             "joint_pos": robot.data.joint_pos[i].cpu().numpy(),
@@ -415,8 +460,8 @@ def main():
             # Step environment
             obs, _, _, _, _ = env.step(actions)
             
-            # Check done
-            done = (sm.sm_state == 16).nonzero(as_tuple=False).squeeze(-1)
+            # Check done (state 18 is the final done state)
+            done = (sm.sm_state == 18).nonzero(as_tuple=False).squeeze(-1)
             if len(done) > 0:
                 for i in done.tolist():
                     if recorder and recorder.save_episode(i):
