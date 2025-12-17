@@ -2,22 +2,28 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 """
-Pick and Place Basket State Machine
+Pick and Place Basket State Machine with Smooth Natural Motion
 
-A simple state machine that picks up a cube from a table and places it into a basket.
+A state machine that picks up a cube and places it in a basket using smooth,
+natural trajectories suitable for imitation learning.
+
+Key features for ML-friendly demonstrations:
+- Smooth interpolation between waypoints (no sudden position jumps)
+- Arc-based transport trajectory (natural human-like motion)
+- Velocity ramping (slow start/end, faster in middle)
+- Time-based progression for consistent demonstrations
 
 States:
     0: INIT            - Wait for simulation to settle
-    1: APPROACH_CUBE   - Move above the cube
+    1: APPROACH_CUBE   - Smoothly move above the cube
     2: DESCEND_CUBE    - Lower to grasp height
     3: GRASP           - Close gripper to grasp cube
-    4: LIFT            - Lift cube straight up
-    5: MOVE_HIGH       - Move to high clearance above basket (avoid IK issues)
-    6: DESCEND_ABOVE   - Descend to approach height above basket
-    7: DESCEND_BASKET  - Lower cube into basket
-    8: RELEASE         - Open gripper to release cube
-    9: RETREAT         - Lift gripper back up
-   10: DONE            - Task complete
+    4: LIFT            - Lift cube up
+    5: TRANSPORT       - Arc motion from cube to basket (smooth parabolic path)
+    6: DESCEND_BASKET  - Lower cube into basket
+    7: RELEASE         - Open gripper to release cube
+    8: RETREAT         - Lift gripper back up
+    9: DONE            - Task complete
 
 Usage:
     ./isaaclab.sh -p scripts/environments/state_machine/pick_place_basket_sm.py \
@@ -46,11 +52,25 @@ from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 class PickPlaceBasketStateMachine:
     """
-    A state machine for the pick and place basket task.
+    A state machine for the pick and place basket task with smooth natural motion.
     
-    The robot picks up a cube from the table and places it into a basket.
-    Each environment runs independently with its own state.
+    The robot picks up a cube from the table and places it into a basket using
+    smooth interpolated trajectories suitable for imitation learning.
+    
+    Each environment runs independently with its own state and interpolation progress.
     """
+    
+    # State constants
+    STATE_INIT = 0
+    STATE_APPROACH_CUBE = 1
+    STATE_DESCEND_CUBE = 2
+    STATE_GRASP = 3
+    STATE_LIFT = 4
+    STATE_TRANSPORT = 5  # Arc motion from cube to basket
+    STATE_DESCEND_BASKET = 6
+    STATE_RELEASE = 7
+    STATE_RETREAT = 8
+    STATE_DONE = 9
     
     def __init__(self, dt: float, num_envs: int, device: torch.device):
         """
@@ -69,22 +89,46 @@ class PickPlaceBasketStateMachine:
         self.sm_state = torch.zeros(num_envs, dtype=torch.int32, device=device)
         self.sm_wait_time = torch.zeros(num_envs, device=device)
         
+        # Interpolation progress [0, 1] for smooth motion within each state
+        self.interp_progress = torch.zeros(num_envs, device=device)
+        
+        # Start and target positions for interpolation
+        self.interp_start = torch.zeros(num_envs, 3, device=device)
+        self.interp_target = torch.zeros(num_envs, 3, device=device)
+        
         # Desired end-effector pose [x, y, z, qw, qx, qy, qz]
         self.des_ee_pose = torch.zeros(num_envs, 7, device=device)
         
         # Gripper command: 1.0 = open, -1.0 = close
         self.des_gripper_state = torch.ones(num_envs, device=device)
         
-        # Height parameters - using higher values for more IK flexibility
-        self.approach_height = 0.12  # Height above object for approach
-        self.grasp_height = 0.0      # Grasp at cube center (0 offset)
-        self.high_clearance = 0.20   # High clearance for safe transit (increased)
-        self.basket_drop_height = 0.08  # Height above basket to drop cube
+        # Height parameters
+        self.approach_height = 0.12   # Height above object for approach
+        self.grasp_height = -0.015    # Grasp slightly below cube center for secure grip
+        self.lift_height = 0.15       # Height after lifting cube
+        self.arc_height = 0.22        # Peak height during transport arc
+        self.basket_drop_height = 0.08  # Height above basket to drop
         
-        # Motion parameters
-        self.threshold = 0.03   # Position threshold (matching stack_cube)
-        self.speed_scale = 3.0  # Movement speed multiplier
-        self.slow_speed = 2.0   # Slower speed for precision moves near basket
+        # Timing parameters (duration in seconds for each motion phase)
+        # Slightly longer durations for smoother motion
+        self.approach_duration = 0.7   # Time to approach cube
+        self.descend_duration = 0.4    # Time to descend to cube
+        self.grasp_duration = 0.2      # Time to close gripper
+        self.lift_duration = 0.35      # Time to lift cube
+        self.transport_duration = 0.9  # Time for arc transport
+        self.basket_descend_duration = 0.4  # Time to descend into basket
+        self.release_duration = 0.2    # Time to open gripper
+        self.retreat_duration = 0.35   # Time to retreat
+        
+        # Blend factor: start next motion slightly before current finishes
+        # This creates overlapping motion for smoother transitions
+        self.blend_threshold = 0.92  # Start transition at 92% completion
+        
+        # Speed parameters for IK control
+        self.base_speed = 2.5  # Base speed multiplier
+        
+        # Position threshold for backup transition
+        self.threshold = 0.02
         
     def reset(self, env_ids=None, ee_pos=None):
         """Reset the state machine for specified environments.
@@ -104,15 +148,88 @@ class PickPlaceBasketStateMachine:
             env_ids_tensor = env_ids
             
         self.sm_state[env_ids] = 0
-        self.sm_wait_time[env_ids] = 0.1
+        self.sm_wait_time[env_ids] = 0.05  # Brief settle time
+        self.interp_progress[env_ids] = 0.0
         self.des_gripper_state[env_ids] = 1.0  # Start with gripper open
         
-        # Reset des_ee_pose to current position to prevent jumping to old targets
+        # Reset des_ee_pose and interpolation to current position
         if ee_pos is not None and len(env_ids_tensor) > 0:
             self.des_ee_pose[env_ids_tensor, :3] = ee_pos[env_ids_tensor]
-            # Reset orientation to default (pointing down)
             self.des_ee_pose[env_ids_tensor, 3] = 1.0  # qw
             self.des_ee_pose[env_ids_tensor, 4:7] = 0.0  # qx, qy, qz
+            self.interp_start[env_ids_tensor] = ee_pos[env_ids_tensor]
+            self.interp_target[env_ids_tensor] = ee_pos[env_ids_tensor]
+    
+    def _smooth_step(self, t: torch.Tensor) -> torch.Tensor:
+        """Compute quintic smooth step function for very smooth motion.
+        
+        Uses smootherstep: 6t⁵ - 15t⁴ + 10t³
+        This has zero velocity AND zero acceleration at both endpoints,
+        creating much smoother transitions than cubic smoothstep.
+        
+        Args:
+            t: Progress value(s) in [0, 1]
+            
+        Returns:
+            Smoothed progress value(s) in [0, 1]
+        """
+        t = torch.clamp(t, 0.0, 1.0)
+        # Quintic smootherstep: 6t⁵ - 15t⁴ + 10t³
+        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+    
+    def _arc_interpolate(
+        self, 
+        start: torch.Tensor, 
+        end: torch.Tensor, 
+        t: torch.Tensor, 
+        arc_height: float
+    ) -> torch.Tensor:
+        """Interpolate along a parabolic arc for natural transport motion.
+        
+        Creates a smooth arc that peaks at the midpoint, like how humans
+        naturally move objects through space.
+        
+        Args:
+            start: Start position [N, 3]
+            end: End position [N, 3]
+            t: Progress [N] in [0, 1]
+            arc_height: Peak height of the arc
+            
+        Returns:
+            Interpolated position [N, 3]
+        """
+        # Smooth the progress for natural acceleration
+        t_smooth = self._smooth_step(t)
+        
+        # Linear interpolation for x, y
+        pos = start + (end - start) * t_smooth.unsqueeze(-1)
+        
+        # Parabolic arc for z: peaks at t=0.5
+        # arc_offset = 4 * h * t * (1 - t) where h is additional height
+        base_z = start[:, 2] + (end[:, 2] - start[:, 2]) * t_smooth
+        arc_offset = 4.0 * arc_height * t_smooth * (1.0 - t_smooth)
+        pos[:, 2] = base_z + arc_offset
+        
+        return pos
+    
+    def _linear_interpolate(
+        self, 
+        start: torch.Tensor, 
+        end: torch.Tensor, 
+        t: torch.Tensor
+    ) -> torch.Tensor:
+        """Smooth linear interpolation with ease in/out.
+        
+        Args:
+            start: Start position [N, 3]
+            end: End position [N, 3]
+            t: Progress [N] in [0, 1]
+            
+        Returns:
+            Interpolated position [N, 3]
+        """
+        t_smooth = self._smooth_step(t)
+        return start + (end - start) * t_smooth.unsqueeze(-1)
             
     def compute(
         self,
@@ -124,7 +241,7 @@ class PickPlaceBasketStateMachine:
         """
         Compute the next desired end-effector pose, gripper command, and speed.
         
-        Following the same pattern as stack_cube_tacex_sm.py for reliability.
+        Uses smooth interpolation for natural, ML-friendly trajectories.
         
         Returns:
             des_ee_pose: Target EE pose [num_envs, 7]
@@ -140,163 +257,193 @@ class PickPlaceBasketStateMachine:
         basket_pos = basket_pose[:, :3]
         
         # Default speed for all envs
-        des_speed = torch.ones(self.num_envs, device=self.device) * self.speed_scale
+        des_speed = torch.ones(self.num_envs, device=self.device) * self.base_speed
         
-        # Process each state (0-10)
-        for s in range(11):
+        # Process each state
+        for s in range(10):
             mask = self.sm_state == s
             if not mask.any():
                 continue
             
-            if s == 0:
-                # STATE 0: INIT - Wait for simulation to settle
+            if s == self.STATE_INIT:
+                # INIT - Wait for simulation to settle, stay in place
                 self.des_ee_pose[mask, :3] = ee_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
                 self.des_gripper_state[mask] = 1.0
                 
                 # Transition when wait expires
-                t = mask & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 1
-                self.sm_wait_time[t] = 0.1
+                trans = mask & (self.sm_wait_time <= 0)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_APPROACH_CUBE
+                    self.interp_progress[trans] = 0.0
+                    self.interp_start[trans] = ee_pos[trans]
+                    target = cube_pos.clone()
+                    target[:, 2] += self.approach_height
+                    self.interp_target[trans] = target[trans]
                 
-            elif s == 1:
-                # STATE 1: APPROACH_CUBE - Move above the cube
-                target = cube_pos.clone()
-                target[:, 2] += self.approach_height
+            elif s == self.STATE_APPROACH_CUBE:
+                # Smoothly move above the cube
+                self.interp_progress[mask] += self.dt / self.approach_duration
                 
-                self.des_ee_pose[mask, :3] = target[mask]
+                # Compute interpolated position
+                interp_pos = self._linear_interpolate(
+                    self.interp_start, self.interp_target, self.interp_progress
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
                 self.des_gripper_state[mask] = 1.0
                 
-                # Transition when position reached
-                t = mask & (torch.norm(ee_pos - target, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 2
-                self.sm_wait_time[t] = 0.15
+                # Transition early for smooth blending into next motion
+                trans = mask & (self.interp_progress >= self.blend_threshold)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_DESCEND_CUBE
+                    # Don't reset progress to 0 - use remaining progress for smooth blend
+                    self.interp_progress[trans] = 0.0
+                    # Use current interpolated position as new start for seamless handoff
+                    self.interp_start[trans] = interp_pos[trans]
+                    target = cube_pos.clone()
+                    target[:, 2] += self.grasp_height
+                    self.interp_target[trans] = target[trans]
                 
-            elif s == 2:
-                # STATE 2: DESCEND_CUBE - Lower to grasp height
-                target = cube_pos.clone()
-                target[:, 2] += self.grasp_height
+            elif s == self.STATE_DESCEND_CUBE:
+                # Lower to grasp height with smooth motion
+                self.interp_progress[mask] += self.dt / self.descend_duration
                 
-                self.des_ee_pose[mask, :3] = target[mask]
+                interp_pos = self._linear_interpolate(
+                    self.interp_start, self.interp_target, self.interp_progress
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
                 self.des_gripper_state[mask] = 1.0
                 
-                # Transition when position reached
-                t = mask & (torch.norm(ee_pos - target, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 3
-                self.sm_wait_time[t] = 0.1
+                # Need to fully complete descent before grasping
+                trans = mask & (self.interp_progress >= 1.0)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_GRASP
+                    self.sm_wait_time[trans] = self.grasp_duration
                 
-            elif s == 3:
-                # STATE 3: GRASP - Close gripper (maintain position at cube)
+            elif s == self.STATE_GRASP:
+                # Close gripper while holding position at cube
                 target = cube_pos.clone()
                 target[:, 2] += self.grasp_height
-                
                 self.des_ee_pose[mask, :3] = target[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
                 self.des_gripper_state[mask] = -1.0  # Close gripper
                 
-                # Transition after wait
-                t = mask & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 4
-                self.sm_wait_time[t] = 0.1
+                # Transition after wait - seamless start to lift
+                trans = mask & (self.sm_wait_time <= 0)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_LIFT
+                    self.interp_progress[trans] = 0.0
+                    # Start from current target (at cube) for seamless motion
+                    self.interp_start[trans] = target[trans]
+                    lift_target = cube_pos.clone()
+                    lift_target[:, 2] = self.lift_height
+                    self.interp_target[trans] = lift_target[trans]
                 
-            elif s == 4:
-                # STATE 4: LIFT - Lift cube straight up to high clearance
-                target = ee_pos.clone()
-                target[:, 2] = self.high_clearance
+            elif s == self.STATE_LIFT:
+                # Lift cube up smoothly
+                self.interp_progress[mask] += self.dt / self.lift_duration
                 
-                self.des_ee_pose[mask, :3] = target[mask]
+                interp_pos = self._linear_interpolate(
+                    self.interp_start, self.interp_target, self.interp_progress
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
-                self.des_gripper_state[mask] = -1.0  # Keep gripper closed
+                self.des_gripper_state[mask] = -1.0
                 
-                # Transition when high enough
-                t = mask & (ee_pos[:, 2] > self.high_clearance - 0.02) & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 5
-                self.sm_wait_time[t] = 0.1
+                # Transition early for smooth blend into arc transport
+                trans = mask & (self.interp_progress >= self.blend_threshold)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_TRANSPORT
+                    self.interp_progress[trans] = 0.0
+                    # Use current interpolated position for seamless handoff
+                    self.interp_start[trans] = interp_pos[trans]
+                    # Target is above the basket at approach height (will descend after)
+                    target = basket_pos.clone()
+                    target[:, 2] += self.approach_height
+                    self.interp_target[trans] = target[trans]
                 
-            elif s == 5:
-                # STATE 5: MOVE_HIGH - Move horizontally to above basket at high clearance
-                # This prevents IK issues when moving between positions
-                # Use slower speed for smoother IK transitions
-                des_speed[mask] = self.slow_speed
+            elif s == self.STATE_TRANSPORT:
+                # Arc motion from cube to basket - the natural carrying trajectory
+                self.interp_progress[mask] += self.dt / self.transport_duration
                 
-                target = basket_pos.clone()
-                target[:, 2] = self.high_clearance
+                # Compute additional arc height for smooth parabolic motion
+                arc_extra = self.arc_height - self.lift_height
                 
-                self.des_ee_pose[mask, :3] = target[mask]
+                interp_pos = self._arc_interpolate(
+                    self.interp_start, self.interp_target, 
+                    self.interp_progress, arc_extra
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
-                self.des_gripper_state[mask] = -1.0  # Keep gripper closed
+                self.des_gripper_state[mask] = -1.0
                 
-                # Transition when position reached
-                t = mask & (torch.norm(ee_pos - target, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 6
-                self.sm_wait_time[t] = 0.1
+                # Blend early into descent for continuous motion
+                trans = mask & (self.interp_progress >= self.blend_threshold)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_DESCEND_BASKET
+                    self.interp_progress[trans] = 0.0
+                    # Use current interpolated position for seamless handoff
+                    self.interp_start[trans] = interp_pos[trans]
+                    target = basket_pos.clone()
+                    target[:, 2] += self.basket_drop_height
+                    self.interp_target[trans] = target[trans]
                 
-            elif s == 6:
-                # STATE 6: DESCEND_ABOVE - Descend to approach height above basket
-                # Use slower speed for precision
-                des_speed[mask] = self.slow_speed
+            elif s == self.STATE_DESCEND_BASKET:
+                # Final descent into basket
+                self.interp_progress[mask] += self.dt / self.basket_descend_duration
                 
-                target = basket_pos.clone()
-                target[:, 2] += self.approach_height
-                
-                self.des_ee_pose[mask, :3] = target[mask]
+                interp_pos = self._linear_interpolate(
+                    self.interp_start, self.interp_target, self.interp_progress
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
-                self.des_gripper_state[mask] = -1.0  # Keep gripper closed
+                self.des_gripper_state[mask] = -1.0
                 
-                # Transition when position reached
-                t = mask & (torch.norm(ee_pos - target, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 7
-                self.sm_wait_time[t] = 0.15
+                # Transition when complete
+                trans = mask & (self.interp_progress >= 1.0)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_RELEASE
+                    self.sm_wait_time[trans] = self.release_duration
                 
-            elif s == 7:
-                # STATE 7: DESCEND_BASKET - Lower into basket
-                # Use slower speed for final descent
-                des_speed[mask] = self.slow_speed
-                
+            elif s == self.STATE_RELEASE:
+                # Open gripper while holding position
                 target = basket_pos.clone()
                 target[:, 2] += self.basket_drop_height
-                
-                self.des_ee_pose[mask, :3] = target[mask]
-                self.des_ee_pose[mask, 3:7] = default_quat[mask]
-                self.des_gripper_state[mask] = -1.0  # Keep gripper closed
-                
-                # Transition when position reached
-                t = mask & (torch.norm(ee_pos - target, dim=1) < self.threshold) & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 8
-                self.sm_wait_time[t] = 0.1
-                
-            elif s == 8:
-                # STATE 8: RELEASE - Open gripper (maintain position)
-                target = basket_pos.clone()
-                target[:, 2] += self.basket_drop_height
-                
                 self.des_ee_pose[mask, :3] = target[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
                 self.des_gripper_state[mask] = 1.0  # Open gripper
                 
-                # Transition after wait
-                t = mask & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 9
-                self.sm_wait_time[t] = 0.3
+                # Transition after wait - seamless start to retreat
+                trans = mask & (self.sm_wait_time <= 0)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_RETREAT
+                    self.interp_progress[trans] = 0.0
+                    # Start from drop position for seamless motion
+                    self.interp_start[trans] = target[trans]
+                    retreat_target = basket_pos.clone()
+                    retreat_target[:, 2] += self.approach_height
+                    self.interp_target[trans] = retreat_target[trans]
                 
-            elif s == 9:
-                # STATE 9: RETREAT - Lift back up
-                target = basket_pos.clone()
-                target[:, 2] += self.approach_height
+            elif s == self.STATE_RETREAT:
+                # Smoothly retreat upward
+                self.interp_progress[mask] += self.dt / self.retreat_duration
                 
-                self.des_ee_pose[mask, :3] = target[mask]
+                interp_pos = self._linear_interpolate(
+                    self.interp_start, self.interp_target, self.interp_progress
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
-                self.des_gripper_state[mask] = 1.0  # Keep gripper open
+                self.des_gripper_state[mask] = 1.0
                 
-                # Transition when high enough
-                t = mask & (ee_pos[:, 2] > self.approach_height - 0.02) & (self.sm_wait_time <= 0)
-                self.sm_state[t] = 10
-                self.sm_wait_time[t] = 0.2
+                # Transition early to avoid abrupt stop at end
+                trans = mask & (self.interp_progress >= self.blend_threshold)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_DONE
                 
-            elif s == 10:
-                # STATE 10: DONE - Task complete, stay in place
+            elif s == self.STATE_DONE:
+                # Task complete - stay in place
                 self.des_ee_pose[mask, :3] = ee_pos[mask]
                 self.des_ee_pose[mask, 3:7] = default_quat[mask]
                 self.des_gripper_state[mask] = 1.0
@@ -386,8 +533,8 @@ def main():
                 ee_pos_fresh = ee_frame.data.target_pos_w[:, 0] - env.scene.env_origins
                 
                 for env_id in env_reset_ids.tolist():
-                    # Only count as demo if state machine was close to completion (state >= 8)
-                    if sm.sm_state[env_id] >= 8:
+                    # Only count as demo if state machine was close to completion (state >= RELEASE)
+                    if sm.sm_state[env_id] >= sm.STATE_RELEASE:
                         demo_count += 1
                         print(f"[INFO] Demo {demo_count}/{args_cli.num_demos} completed (env {env_id})")
                 
@@ -395,7 +542,7 @@ def main():
                 sm.reset(env_reset_ids.tolist(), ee_pos_fresh)
             
             # Also check for state machine DONE state (backup in case termination doesn't fire)
-            done_envs = (sm.sm_state == 10).nonzero(as_tuple=False).squeeze(-1)
+            done_envs = (sm.sm_state == sm.STATE_DONE).nonzero(as_tuple=False).squeeze(-1)
             
             if len(done_envs) > 0:
                 ee_pos_current = ee_frame.data.target_pos_w[:, 0] - env.scene.env_origins
