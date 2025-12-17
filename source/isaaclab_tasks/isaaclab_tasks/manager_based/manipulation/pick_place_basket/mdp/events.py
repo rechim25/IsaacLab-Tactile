@@ -108,6 +108,83 @@ def randomize_cube_scale(
             scale_op.Set((scale, scale, scale))
 
 
+def randomize_cube_color(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    cube_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+):
+    """
+    Randomize cube color to a vibrant color (avoiding white, grey, black).
+    
+    Picks from saturated colors with good visibility for manipulation tasks.
+    Works with procedural CuboidCfg that uses PreviewSurfaceCfg material.
+    """
+    if env_ids is None or len(env_ids) == 0:
+        return
+
+    from pxr import Gf
+    import isaacsim.core.utils.prims as prim_utils
+    
+    # Vibrant colors (R, G, B) - avoiding white, grey, black
+    VIBRANT_COLORS = [
+        # Primary colors
+        (0.95, 0.15, 0.15),  # Bright red
+        (0.15, 0.75, 0.15),  # Bright green
+        (0.15, 0.35, 0.95),  # Bright blue
+        # Secondary colors
+        (0.95, 0.85, 0.1),   # Yellow
+        (0.95, 0.5, 0.1),    # Orange
+        (0.75, 0.15, 0.85),  # Purple
+        (0.1, 0.85, 0.85),   # Cyan
+        (0.95, 0.4, 0.7),    # Pink
+        (0.5, 0.95, 0.1),    # Lime
+        # Warm tones
+        (0.85, 0.25, 0.1),   # Vermilion
+        (0.95, 0.35, 0.2),   # Coral
+        (0.9, 0.6, 0.2),     # Amber
+        (0.85, 0.45, 0.55),  # Rose
+        (0.7, 0.2, 0.3),     # Crimson
+        (0.95, 0.7, 0.4),    # Peach
+        (0.8, 0.3, 0.1),     # Rust
+        # Cool tones
+        (0.2, 0.5, 0.85),    # Sky blue
+        (0.1, 0.6, 0.7),     # Teal
+        (0.3, 0.7, 0.6),     # Seafoam
+        (0.4, 0.2, 0.7),     # Indigo
+        (0.55, 0.35, 0.85),  # Violet
+        (0.2, 0.8, 0.6),     # Mint
+        (0.1, 0.4, 0.6),     # Ocean
+        # Earth tones (saturated)
+        (0.6, 0.4, 0.2),     # Bronze
+        (0.7, 0.5, 0.3),     # Tan
+        (0.5, 0.35, 0.2),    # Brown
+        # Misc vibrant
+        (0.85, 0.1, 0.55),   # Magenta
+        (0.95, 0.2, 0.8),    # Hot pink
+        (0.6, 0.9, 0.3),     # Chartreuse
+        (0.3, 0.85, 0.4),    # Spring green
+        (0.9, 0.9, 0.2),     # Lemon
+        (0.7, 0.6, 0.9),     # Lavender
+        (0.4, 0.7, 0.9),     # Light blue
+        (0.9, 0.6, 0.7),     # Salmon
+    ]
+    
+    for cur_env in env_ids.tolist():
+        # Pick a random color
+        color = random.choice(VIBRANT_COLORS)
+        
+        # Get the shader prim path for procedural CuboidCfg
+        # CuboidCfg creates: /Cube/geometry/mesh and material at /Cube/geometry/material/Shader
+        shader_path = f"/World/envs/env_{cur_env}/Cube/geometry/material/Shader"
+        
+        shader_prim = prim_utils.get_prim_at_path(shader_path)
+        if shader_prim and shader_prim.IsValid():
+            # PreviewSurfaceCfg uses inputs:diffuseColor
+            attr = shader_prim.GetAttribute("inputs:diffuseColor")
+            if attr and attr.IsValid():
+                attr.Set(Gf.Vec3f(*color))
+
+
 def randomize_cube_pose(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,

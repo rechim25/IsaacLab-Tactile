@@ -11,7 +11,8 @@ from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.sim.spawners.shapes import CuboidCfg
-from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg
+from isaaclab.sim.spawners.materials import RigidBodyMaterialCfg, PreviewSurfaceCfg
+import isaaclab.sim as sim_utils
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 
@@ -56,6 +57,15 @@ class EventCfg:
         params={
             "cube_cfg": SceneEntityCfg("cube"),
             "scale_range": (0.85, 1.15),  # Single parameter: (min_scale, max_scale)
+        },
+    )
+
+    # Randomize cube color (vibrant colors, no white/grey/black)
+    randomize_cube_color = EventTerm(
+        func=mdp.randomize_cube_color,
+        mode="reset",
+        params={
+            "cube_cfg": SceneEntityCfg("cube"),
         },
     )
 
@@ -147,16 +157,17 @@ class FrankaPickPlaceBasketEnvCfg(PickPlaceBasketEnvCfg):
             disable_gravity=False,
         )
 
-        # Cube - using a procedurally generated cuboid for size randomization flexibility
-        # Using blue block as default, can be changed for color randomization
+        # Cube - procedurally generated cuboid for easy size/color randomization
+        # Size ~5cm to match blue_block.usd dimensions
         self.scene.cube = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Cube",
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.42, -0.12, 0.0203], rot=[1, 0, 0, 0]),
-            spawn=UsdFileCfg(
-                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/blue_block.usd",
-                scale=(1.0, 1.0, 1.0),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.42, -0.12, 0.045], rot=[1, 0, 0, 0]),
+            spawn=CuboidCfg(
+                size=(0.05, 0.05, 0.05),  # 5cm cube
                 rigid_props=cube_properties,
-                semantic_tags=[("class", "cube")],
+                mass_props=sim_utils.MassPropertiesCfg(mass=0.1),
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                visual_material=PreviewSurfaceCfg(diffuse_color=(0.2, 0.4, 0.9)),  # Default blue
             ),
         )
 
