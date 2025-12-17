@@ -49,6 +49,16 @@ class EventCfg:
         },
     )
 
+    # Randomize cube size (±15% variation by default)
+    randomize_cube_scale = EventTerm(
+        func=mdp.randomize_cube_scale,
+        mode="reset",
+        params={
+            "cube_cfg": SceneEntityCfg("cube"),
+            "scale_range": (0.85, 1.15),  # Single parameter: (min_scale, max_scale)
+        },
+    )
+
     # Randomize basket position first (in a reachable region)
     # Keep Y range closer to center to avoid IK issues at workspace edges
     randomize_basket_position = EventTerm(

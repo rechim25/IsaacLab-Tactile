@@ -62,6 +62,52 @@ def _sample_pose(pose_range: dict[str, tuple[float, float]]) -> list[float]:
     return [random.uniform(r[0], r[1]) for r in range_list]
 
 
+def randomize_cube_scale(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    cube_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+    scale_range: tuple[float, float] = (0.8, 1.2),
+):
+    """
+    Randomize cube scale uniformly within scale_range.
+    
+    Args:
+        env: The environment instance.
+        env_ids: Environment indices to randomize.
+        cube_cfg: Scene entity config for the cube.
+        scale_range: (min_scale, max_scale) - uniform scale multiplier range.
+                     Default (0.8, 1.2) gives ±20% size variation.
+    """
+    if env_ids is None or len(env_ids) == 0:
+        return
+
+    import isaacsim.core.utils.prims as prim_utils
+    
+    cube = env.scene[cube_cfg.name]
+    
+    for cur_env in env_ids.tolist():
+        # Sample random uniform scale
+        scale = random.uniform(scale_range[0], scale_range[1])
+        
+        # Get the prim path for this environment's cube
+        prim_path = cube.cfg.prim_path.replace("{ENV_REGEX_NS}", f"/World/envs/env_{cur_env}")
+        
+        # Apply scale to the prim
+        prim = prim_utils.get_prim_at_path(prim_path)
+        if prim.IsValid():
+            from pxr import UsdGeom
+            xformable = UsdGeom.Xformable(prim)
+            # Clear existing scale ops and set new uniform scale
+            scale_op = None
+            for op in xformable.GetOrderedXformOps():
+                if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                    scale_op = op
+                    break
+            if scale_op is None:
+                scale_op = xformable.AddScaleOp()
+            scale_op.Set((scale, scale, scale))
+
+
 def randomize_cube_pose(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
