@@ -463,6 +463,10 @@ def main():
                 ee_frame.data.target_quat_w[:, 0]
             ], dim=-1)
             
+            # Get robot base/root pose (for base-relative transforms)
+            base_pos = robot.data.root_pos_w - env.scene.env_origins  # (num_envs, 3)
+            base_quat = robot.data.root_quat_w  # (num_envs, 4)
+            
             # Compute action
             des_pose, grip, speed = sm.compute(ee_pose, cube_pose, basket_pose, default_quat)
             delta = (des_pose[:, :3] - ee_pose[:, :3]) * speed.unsqueeze(-1)
@@ -478,6 +482,8 @@ def main():
                             "joint_vel": robot.data.joint_vel[i].cpu().numpy(),
                             "ee_pos": ee_pose[i, :3].cpu().numpy(),
                             "ee_quat": ee_pose[i, 3:7].cpu().numpy(),
+                            "base_pos": base_pos[i].cpu().numpy(),  # Robot base position
+                            "base_quat": base_quat[i].cpu().numpy(),  # Robot base quaternion (x,y,z,w)
                             "gripper_pos": robot.data.joint_pos[i, -2:].cpu().numpy(),
                             "cube_pos": cube_pose[i, :3].cpu().numpy(),
                             "cube_quat": cube_pose[i, 3:7].cpu().numpy(),
