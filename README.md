@@ -1,3 +1,184 @@
+# Installation - Data Collection
+
+Clone this repository first:
+```sh
+git clone --recurse-submodules https://github.com/rechim25/IsaacLab-Tactile
+```
+
+## Install Isaac Lab + TacEx (Isaac Sim 4.5) and run TacEx data collection
+
+This guide is the **most reliable** setup for TacEx: **Isaac Sim 4.5 (Python
+3.10)** + **Isaac Lab** + **TacEx** using **conda**.
+
+> **Important compatibility**
+>
+> - **TacEx requires Isaac Sim 4.5** (Python **3.10**)
+> - Isaac Sim 5.x uses Python **3.11** → TacEx install will fail with
+>   wheel/platform mismatches.
+
+---
+
+## Prerequisites (Ubuntu)
+
+- Ubuntu 22.04 recommended
+- NVIDIA GPU + drivers working (`nvidia-smi` should work)
+- `git-lfs` installed (needed for USD assets in some repos)
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git git-lfs build-essential cmake unzip
+git lfs install
+```
+
+---
+
+## 1) Install Isaac Sim 4.5 (standalone zip)
+
+Download **Isaac Sim 4.5.0 standalone** zip from NVIDIA/Omniverse.
+
+### Extract correctly (the zip extracts “flat”)
+
+The file `isaac-sim-standalone-4.5.0-linux-x86_64.zip` does **NOT** contain a
+top-level folder. So you must create one and unzip into it.
+
+```bash
+mkdir -p ~/.local/share/ov/pkg/isaac-sim-4.5.0
+cd ~/Downloads
+unzip isaac-sim-standalone-4.5.0-linux-x86_64.zip -d ~/.local/share/ov/pkg/isaac-sim-4.5.0
+```
+
+### Verify version + first-run reset
+
+```bash
+cat ~/.local/share/ov/pkg/isaac-sim-4.5.0/VERSION
+~/.local/share/ov/pkg/isaac-sim-4.5.0/isaac-sim.sh --reset-user
+~/.local/share/ov/pkg/isaac-sim-4.5.0/python.sh -c "print('Isaac Sim OK')"
+```
+
+---
+
+## 2) Install Miniconda (recommended)
+
+If you don’t already have conda:
+
+```bash
+cd ~
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+source ~/.bashrc
+```
+
+---
+
+## 3) Clone Isaac Lab and link Isaac Sim 4.5
+
+```bash
+cd ~
+git clone https://github.com/isaac-sim/IsaacLab.git
+cd IsaacLab
+
+# Create the standard Isaac Lab symlink to your Isaac Sim install
+ln -s ~/.local/share/ov/pkg/isaac-sim-4.5.0 _isaac_sim
+```
+
+---
+
+## 4) Create the conda env (Python 3.10) + install Isaac Lab
+
+```bash
+cd ~/IsaacLab
+
+# Create env (default name: env_isaaclab)
+./isaaclab.sh --conda
+
+conda activate env_isaaclab
+python --version  # MUST be 3.10.x for Isaac Sim 4.5
+
+# Install/build Isaac Lab into the env
+./isaaclab.sh --install
+```
+
+If you see Python 3.11 here, you’re not actually using Isaac Sim 4.5 / the setup
+is mis-detected.
+
+---
+
+## 5) Install TacEx (WITH submodules)
+
+```bash
+cd ~/IsaacLab
+git clone --recurse-submodules https://github.com/DH-Ng/TacEx
+
+cd ~/IsaacLab/TacEx
+./tacex.sh --install
+```
+
+---
+
+## 6) Quick TacEx sanity test (must enable cameras)
+
+```bash
+cd ~/IsaacLab
+conda activate env_isaaclab
+
+./isaaclab.sh -p scripts/environments/random_agent.py \
+  --task Isaac-Stack-Cube-Franka-IK-Rel-TacEx-v0 \
+  --num_envs 1 \
+  --enable_cameras
+```
+
+---
+
+## Troubleshooting
+
+- **CUDA error 999 / `cudaErrorUnknown`**
+  - First try closing any Isaac Sim processes and re-run.
+  - If the NVIDIA kernel modules are “in use” and can’t be reloaded, **reboot**
+    is the most reliable fix.
+
+- **Cameras error**
+  - Always run TacEx scripts with **`--enable_cameras`**.
+
+- **Version check**
+  - Isaac Sim binary install version:
+    ```bash
+    cat ~/.local/share/ov/pkg/isaac-sim-4.5.0/VERSION
+    ```
+  - Python version (TacEx requires 3.10):
+    ```bash
+    conda activate env_isaaclab
+    python --version
+    ```
+
+--- 
+
+# Run - Data Collection
+
+In this tutorial, we will run data collection with tactile sensing for a custom `pick_place_basket` task.
+
+### Generate Demonstrations
+
+To generate 100 demos (4 parallel envs) headless and save data to `./datasets/pick_place_basket_tacex.hdf5`:
+```sh
+cd /home/rechim/IsaacLab
+
+./isaaclab.sh -p scripts/environments/state_machine/pick_place_basket_tacex_sm.py --num_envs 4 --num_demos 100 --headless --enable_cameras --rendering_mode quality --save_demos --output_file ./datasets/pick_place_basket_tacex.hdf5
+```
+
+### Inspect Data
+
+Create plots:
+```sh
+python scripts/tools/inspect_hdf5.py ./datasets/pick_place_basket_tacex.hdf5 --samples 1 --plot --trajectory --forces
+```
+
+Create video:
+```sh
+python scripts/tools/inspect_hdf5.py ./datasets/pick_place_basket_tacex.hdf5 --video --demo-idx 0   --video-output demo_video.mp4 --fps 30
+```
+
+---
+
 ![Isaac Lab](docs/source/_static/isaaclab.jpg)
 
 ---
