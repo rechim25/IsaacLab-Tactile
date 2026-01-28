@@ -22,6 +22,9 @@
 **/*.pyc
 **/*.pb
 
+datasets/
+lerobot/pretrained/
+
 # Docker/Singularity
 **/*.sif
 docker/cluster/exports/

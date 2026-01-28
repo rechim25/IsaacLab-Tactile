@@ -180,23 +180,56 @@ For evaluation, IsaacLab runs as a server in its own conda environment (with GPU
 
 ### Server (IsaacLab side)
 
+Start the evaluation server in the IsaacLab environment:
+
 ```bash
-conda activate isaaclab
-python scripts/eval_server.py --port 5555 --env pick_place_basket
+# Terminal 1: Start IsaacLab evaluation server
+conda activate env_isaaclab
+cd /home/radu/IsaacLab-Tactile
+./isaaclab.sh -p scripts/eval_server.py --port 5555 --headless
 ```
+
+The server:
+- Initializes the `Isaac-Pick-Place-Basket-Franka-IK-Rel-TacEx-v0` environment
+- Returns observations with fixed shapes: `rgb_table`/`rgb_wrist` at 224x224x3, `tactile_force_grid` at (2,10,12,3)
+- Listens for ZeroMQ commands (`reset`, `step`) on port 5555
 
 ### Client (SmolVLA side)
 
+With the server running, evaluate the policy in a separate terminal:
+
 ```bash
+# Terminal 2: Run evaluation
 conda activate smolvla
+cd /home/radu/IsaacLab-Tactile/lerobot
+
 lerobot-eval \
-  --policy.path=outputs/smolvla_tactile_armhand \
+  --policy.path=/home/radu/IsaacLab-Tactile/lerobot/outputs/smolvla_tactile_pick_place_basket_tacex_100_basepose/checkpoints/last/pretrained_model \
   --env.type=isaaclab_tactile_remote \
   --env.server_host=localhost \
   --env.server_port=5555 \
-  --env.task=pick_place \
-  --eval.n_episodes=10
+  --env.observation_height=224 \
+  --env.observation_width=224 \
+  --eval.batch_size=1 \
+  --eval.n_episodes=10 \
+  --rename_map='{"observation.images.rgb_table": "observation.images.camera1", "observation.images.rgb_wrist": "observation.images.camera2"}'
 ```
+
+Key arguments:
+- `--policy.path`: Path to the **pretrained_model** directory (containing `config.json`)
+- `--env.type=isaaclab_tactile_remote`: Use the ZeroMQ client environment
+- `--eval.batch_size=1`: Required for single-env REQ/REP server
+- `--rename_map`: Maps environment camera names (`rgb_table`/`rgb_wrist`) to policy camera names (`camera1`/`camera2`)
+
+### Dataflow during evaluation
+
+1. **Server** → raw observations (world-frame poses, uint8 images, tactile grid)
+2. **Client** → `preprocess_observation()` converts to tensors
+3. **Env preprocessor** → `IsaacLabTactilePolicyObservationProcessorStep` encodes 11D state from world-frame poses
+4. **Policy preprocessor** → rename_map, normalization
+5. **SmolVLA** → predicts 7D action (base-frame deltas)
+6. **Env postprocessor** → `IsaacLabTactilePolicyActionProcessorStep` converts back to world-frame action
+7. **Server** → executes action, returns next observation
 
 The client applies env preprocessor (`IsaacLabTactilePolicyObservationProcessorStep`) and postprocessor (`IsaacLabTactilePolicyActionProcessorStep`) using the same shared adapter.
 
