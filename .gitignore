@@ -22,7 +22,7 @@
 **/*.pyc
 **/*.pb
 
-datasets/
+lerobot/datasets/
 lerobot/pretrained/
 
 # Docker/Singularity
