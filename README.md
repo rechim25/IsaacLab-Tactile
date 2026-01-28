@@ -2,7 +2,7 @@
 
 Clone this repository first:
 ```sh
-git clone --recurse-submodules https://github.com/rechim25/IsaacLab-Tactile
+git clone --recurse-submodules https://github.com/rechim25/IsaacLab-Tactile.git
 ```
 
 ## Install Isaac Lab + TacEx (Isaac Sim 4.5) and run TacEx data collection
