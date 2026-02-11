@@ -143,7 +143,7 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
     
     # Pass through raw pose/state fields for env preprocessor
     # Use OBS_STR prefix ("observation.") so batch_to_transition includes them in the transition
-    for key in ["eef_pos", "eef_quat", "base_pos", "base_quat", "gripper_qpos"]:
+    for key in ["eef_pos", "eef_quat", "base_pos", "base_quat", "gripper_qpos", "arm_joint_pos"]:
         if key in observations:
             val = observations[key]
             if isinstance(val, np.ndarray):

@@ -104,29 +104,37 @@ class IsaacLabEnvWrapper:
         self.env = None
         self._step_count = 0
         self._max_episode_steps = 300
+        self.is_joint_control = False
+        self.action_dim = 7
         
         logger.info(f"Initializing IsaacLab environment: {env_name}")
         self._setup_env()
     
     def _setup_env(self):
         """Set up the IsaacLab environment."""
-        # Try TacEx environment first, fall back to non-tactile
         try:
             env_cfg = parse_env_cfg(self.env_name, device=self.device, num_envs=1)
             self.has_tacex = "TacEx" in self.env_name
         except Exception as e:
-            logger.warning(f"Failed to load {self.env_name}: {e}")
-            fallback_name = "Isaac-Pick-Place-Basket-Franka-IK-Rel-v0"
-            logger.info(f"Trying fallback: {fallback_name}")
-            env_cfg = parse_env_cfg(fallback_name, device=self.device, num_envs=1)
-            self.env_name = fallback_name
-            self.has_tacex = False
+            raise RuntimeError(
+                f"Failed to load environment '{self.env_name}'. "
+                "Refusing to fall back silently because that can break action-space compatibility."
+            ) from e
         
         # Disable timeout termination for evaluation
         if hasattr(env_cfg, "terminations") and hasattr(env_cfg.terminations, "time_out"):
             env_cfg.terminations.time_out = None
         
         self.env = gym.make(self.env_name, cfg=env_cfg).unwrapped
+
+        # Infer action space directly from the loaded environment.
+        action_manager = getattr(self.env, "action_manager", None)
+        inferred_action_dim = int(getattr(action_manager, "total_action_dim", 0) or 0)
+        if inferred_action_dim <= 0:
+            # Conservative fallback for uncommon wrappers.
+            inferred_action_dim = 8 if (("Joint" in str(self.env_name)) and ("IK" not in str(self.env_name))) else 7
+        self.action_dim = inferred_action_dim
+        self.is_joint_control = self.action_dim == 8
         
         # Detect available sensors
         sensors = getattr(self.env.scene, "sensors", {})
@@ -136,6 +144,9 @@ class IsaacLabEnvWrapper:
         self.has_gsmini_right = "gsmini_right" in sensors
         
         logger.info(f"Environment: {self.env_name}")
+        logger.info(
+            f"Control mode: {'joint' if self.is_joint_control else 'ik_rel'} (action_dim={self.action_dim})"
+        )
         logger.info(f"Sensors: wrist_cam={self.has_wrist_cam}, table_cam={self.has_table_cam}, "
                     f"gsmini_left={self.has_gsmini_left}, gsmini_right={self.has_gsmini_right}")
     
@@ -143,14 +154,18 @@ class IsaacLabEnvWrapper:
         """Extract observation dict from current environment state."""
         robot = self.env.scene["robot"]
         ee_frame = self.env.scene["ee_frame"]
+
+        def _wxyz_to_xyzw(q_wxyz: torch.Tensor) -> torch.Tensor:
+            # IsaacLab buffers are typically wxyz; LeRobot convention is xyzw.
+            return torch.stack([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
         
         # End-effector pose (relative to env origin)
         eef_pos = (ee_frame.data.target_pos_w[:, 0] - self.env.scene.env_origins)[0]
-        eef_quat = ee_frame.data.target_quat_w[:, 0][0]
+        eef_quat = _wxyz_to_xyzw(ee_frame.data.target_quat_w[:, 0][0])
         
         # Robot base pose (relative to env origin)
         base_pos = (robot.data.root_pos_w - self.env.scene.env_origins)[0]
-        base_quat = robot.data.root_quat_w[0]
+        base_quat = _wxyz_to_xyzw(robot.data.root_quat_w[0])
         
         # Gripper joint positions (last 2 joints)
         gripper_qpos = robot.data.joint_pos[0, -2:]
@@ -162,6 +177,10 @@ class IsaacLabEnvWrapper:
             "base_quat": base_quat.cpu().numpy().astype(np.float32),
             "gripper_qpos": gripper_qpos.cpu().numpy().astype(np.float32),
         }
+
+        # For joint-space control, also provide the 7-DoF arm joint positions.
+        if self.is_joint_control:
+            obs["arm_joint_pos"] = robot.data.joint_pos[0, :7].cpu().numpy().astype(np.float32)
         
         # Camera images
         if self.has_table_cam:
@@ -271,9 +290,17 @@ class IsaacLabEnvWrapper:
         else:
             self.env.reset()
         
-        # Run one step to ensure sensors are updated
-        action = np.zeros(7, dtype=np.float32)
-        self.env.step(torch.from_numpy(action).unsqueeze(0).to(self.device))
+        # Run one step to ensure sensors are updated.
+        # For joint control, avoid sending zeros (unsafe); use current joints as target.
+        if self.is_joint_control:
+            robot = self.env.scene["robot"]
+            warm = np.zeros((8,), dtype=np.float32)
+            warm[:7] = robot.data.joint_pos[0, :7].detach().cpu().numpy().astype(np.float32)
+            warm[7] = 1.0  # gripper open
+        else:
+            warm = np.zeros((7,), dtype=np.float32)
+            warm[6] = 1.0  # gripper open
+        self.env.step(torch.from_numpy(warm).unsqueeze(0).to(self.device))
         
         return self._extract_observation()
     
@@ -282,14 +309,21 @@ class IsaacLabEnvWrapper:
         Step the environment.
         
         Args:
-            action: 7D action [delta_pos(3), delta_rot(3), gripper(1)]
+            action: Action array
+                - IK-Rel (7D): [delta_pos(3), delta_rot(3), gripper(1)]
+                - Joint (8D): [arm_joint_pos_target(7), gripper(1)]
             
         Returns:
             Tuple of (obs, reward, terminated, info)
         """
         self._step_count += 1
         
-        # Convert action to tensor and step
+        # Convert action to tensor and step (defensive reshape to (1, action_dim))
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+        if action.size < self.action_dim:
+            action = np.pad(action, (0, self.action_dim - action.size))
+        elif action.size > self.action_dim:
+            action = action[: self.action_dim]
         action_tensor = torch.from_numpy(action).float().unsqueeze(0).to(self.device)
         _, reward, terminated, truncated, info = self.env.step(action_tensor)
         

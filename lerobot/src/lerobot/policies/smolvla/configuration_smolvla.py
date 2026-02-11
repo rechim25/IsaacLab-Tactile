@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Literal
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
@@ -125,7 +124,7 @@ class SmolVLAConfig(PreTrainedConfig):
     # How to organize tactile tokens in prefix
     # - "per_fingertip_per_branch": 2*N tokens (one force + one spatial per fingertip)
     # - "per_branch_pooled": 2 tokens (pooled force + pooled spatial across fingertips)
-    tactile_token_mode: Literal["per_fingertip_per_branch", "per_branch_pooled"] = "per_fingertip_per_branch"
+    tactile_token_mode: str = "per_fingertip_per_branch"
 
     # CAE latent dimension (paper uses 128)
     tactile_latent_dim: int = 128

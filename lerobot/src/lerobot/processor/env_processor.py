@@ -458,6 +458,166 @@ class IsaacLabTactilePolicyObservationProcessorStep(ObservationProcessorStep):
 
 
 @dataclass
+@ProcessorStepRegistry.register(name="isaaclab_tactile_joint_policy_obs")
+class IsaacLabTactileJointPolicyObservationProcessorStep(ObservationProcessorStep):
+    """
+    Processes IsaacLab tactile observations into the **joint-space** policy format.
+
+    **State Convention (9D):**
+        [arm_joint_pos(7), gripper_qpos(2)]
+
+    **Required Raw Observation Keys:**
+        - arm_joint_pos: 7-DoF arm joint positions (radians)
+        - gripper_qpos or gripper_pos: 2D gripper joint positions
+    """
+
+    arm_joint_pos_key: str = "arm_joint_pos"
+    gripper_qpos_key: str = "gripper_qpos"
+
+    # Tactile keys
+    tactile_force_grid_key: str = "tactile_force_grid"
+    tactile_resultant_force_key: str | None = None
+
+    # Camera keys (comma-separated)
+    camera_keys: str = ""
+
+    # Output tactile key names
+    output_tactile_force_grid_key: str = "observation.tactile.force_grid"
+    output_tactile_resultant_force_key: str = "observation.tactile.resultant_force"
+
+    def _process_observation(self, observation: dict) -> dict:
+        processed_obs: dict[str, Any] = {}
+
+        raw_obs = self._extract_raw_obs(observation)
+        arm_joint_pos = raw_obs.get("arm_joint_pos")
+        gripper_qpos = raw_obs.get("gripper_qpos")
+
+        if arm_joint_pos is not None and gripper_qpos is not None:
+            # Convert to torch tensors (B, *)
+            arm = arm_joint_pos
+            grip = gripper_qpos
+            if isinstance(arm, np.ndarray):
+                arm = torch.from_numpy(arm)
+            if isinstance(grip, np.ndarray):
+                grip = torch.from_numpy(grip)
+            arm = arm.float()
+            grip = grip.float()
+
+            if arm.dim() == 1:
+                arm = arm.unsqueeze(0)
+            if grip.dim() == 1:
+                grip = grip.unsqueeze(0)
+
+            # If gripper is (B, 1) mistakenly, try to pad/crop to (B, 2)
+            if grip.shape[-1] != 2:
+                g = grip.reshape(grip.shape[0], -1)
+                if g.shape[1] >= 2:
+                    grip = g[:, :2]
+                else:
+                    grip = torch.zeros((g.shape[0], 2), dtype=torch.float32, device=g.device)
+
+            arm = arm.reshape(arm.shape[0], -1)
+            if arm.shape[1] >= 7:
+                arm = arm[:, :7]
+            else:
+                arm = torch.zeros((arm.shape[0], 7), dtype=torch.float32, device=arm.device)
+
+            processed_obs[OBS_STATE] = torch.cat([arm, grip], dim=-1)
+
+        # Process images (reuse same logic as EE-based processor)
+        self._process_images(observation, processed_obs)
+
+        # Process tactile data
+        self._process_tactile(raw_obs, processed_obs)
+
+        return processed_obs
+
+    def _extract_raw_obs(self, observation: dict) -> dict:
+        raw_obs: dict[str, Any] = {}
+
+        def find_value(keys: list[str]) -> Any:
+            for key in keys:
+                if key in observation:
+                    return observation[key]
+                obs_key = f"{OBS_STR}.{key}"
+                if obs_key in observation:
+                    return observation[obs_key]
+                robot_state_key = f"{OBS_PREFIX}robot_state"
+                if robot_state_key in observation:
+                    rs = observation[robot_state_key]
+                    if isinstance(rs, dict) and key in rs:
+                        return rs[key]
+            return None
+
+        raw_obs["arm_joint_pos"] = find_value([self.arm_joint_pos_key, "arm_joint_pos", "joint_pos_arm"])
+        raw_obs["gripper_qpos"] = find_value(
+            [self.gripper_qpos_key, "gripper_pos", "gripper_qpos", "gripper_joint_pos"]
+        )
+
+        raw_obs["tactile_force_grid"] = find_value([self.tactile_force_grid_key, "force_grid"])
+        if self.tactile_resultant_force_key:
+            raw_obs["tactile_resultant_force"] = find_value(
+                [self.tactile_resultant_force_key, "resultant_force"]
+            )
+
+        return raw_obs
+
+    def _process_images(self, observation: dict, processed_obs: dict) -> None:
+        for key in list(observation.keys()):
+            if key.startswith(f"{OBS_IMAGES}."):
+                processed_obs[key] = observation[key]
+
+        if self.camera_keys:
+            camera_keys_list = [k.strip() for k in self.camera_keys.split(",") if k.strip()]
+            camera_obs_key = f"{OBS_STR}.camera_obs"
+            if camera_obs_key in observation:
+                camera_obs = observation[camera_obs_key]
+                for cam_name in camera_keys_list:
+                    if cam_name in camera_obs:
+                        img = camera_obs[cam_name]
+                        if img.dim() == 4 and img.shape[-1] in (1, 3, 4):
+                            img = img.permute(0, 3, 1, 2).contiguous()
+                        if img.dtype == torch.uint8:
+                            img = img.float() / 255.0
+                        processed_obs[f"{OBS_IMAGES}.{cam_name}"] = img
+
+    def _process_tactile(self, raw_obs: dict, processed_obs: dict) -> None:
+        force_grid = raw_obs.get("tactile_force_grid")
+        if force_grid is not None:
+            if isinstance(force_grid, np.ndarray):
+                force_grid = torch.from_numpy(force_grid)
+            processed_obs[self.output_tactile_force_grid_key] = force_grid.float()
+
+        resultant_force = raw_obs.get("tactile_resultant_force")
+        if resultant_force is not None:
+            if isinstance(resultant_force, np.ndarray):
+                resultant_force = torch.from_numpy(resultant_force)
+            processed_obs[self.output_tactile_resultant_force_key] = resultant_force.float()
+
+    def observation(self, observation: dict) -> dict:
+        return self._process_observation(observation)
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        new_features: dict[PipelineFeatureType, dict[str, PolicyFeature]] = {}
+
+        for ft, feats in features.items():
+            if ft != PipelineFeatureType.STATE:
+                new_features[ft] = feats.copy()
+
+        state_feats = {}
+        state_feats[OBS_STATE] = PolicyFeature(
+            key=OBS_STATE,
+            shape=(9,),  # [arm_joint_pos(7), gripper_qpos(2)]
+            dtype="float32",
+            description="IsaacLab tactile joint-space policy state: arm joints (7) + gripper qpos (2).",
+        )
+        new_features[PipelineFeatureType.STATE] = state_feats
+        return new_features
+
+
+@dataclass
 @ProcessorStepRegistry.register(name="isaaclab_tactile_policy_action")
 class IsaacLabTactilePolicyActionProcessorStep(ActionProcessorStep):
     """

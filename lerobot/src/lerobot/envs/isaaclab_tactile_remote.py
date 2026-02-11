@@ -218,6 +218,10 @@ class IsaacLabTactileRemoteEnv(gym.Env):
             else:
                 # Plain JSON response
                 response = json.loads(response_bytes.decode("utf-8"))
+
+            # Fail fast on server-side errors so eval doesn't silently continue with black frames.
+            if isinstance(response, dict) and "error" in response:
+                raise RuntimeError(f"IsaacLab server error: {response['error']}")
             
             return response
             
@@ -458,6 +462,72 @@ class IsaacLabTactileRemoteEnv(gym.Env):
         self._disconnect()
 
 
+class IsaacLabTactileRemoteJointEnv(IsaacLabTactileRemoteEnv):
+    """
+    Remote IsaacLab client for **joint-space** control.
+
+    - Action: 8D [arm_joint_pos_target(7), gripper(1)]
+    - Adds observation key: "arm_joint_pos" (7D) for joint-space state construction upstream.
+    """
+
+    def __init__(
+        self,
+        server_host: str = "localhost",
+        server_port: int = 5555,
+        timeout_ms: int = 30000,
+        observation_height: int = 224,
+        observation_width: int = 224,
+        tactile_shape: tuple[int, ...] = (2, 10, 12, 3),
+        max_episode_steps: int = 300,
+        render_mode: str | None = "rgb_array",
+    ):
+        super().__init__(
+            server_host=server_host,
+            server_port=server_port,
+            timeout_ms=timeout_ms,
+            observation_height=observation_height,
+            observation_width=observation_width,
+            tactile_shape=tactile_shape,
+            max_episode_steps=max_episode_steps,
+            render_mode=render_mode,
+        )
+
+        # Override action space to 8D absolute joint targets + gripper command
+        # Franka Panda arm joint limits (rad), plus gripper command in [-1, 1].
+        low = np.array(
+            [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973, -1.0],
+            dtype=np.float32,
+        )
+        high = np.array(
+            [2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973, 1.0],
+            dtype=np.float32,
+        )
+        self.action_space = spaces.Box(low=low, high=high, shape=(8,), dtype=np.float32)
+
+        # Extend observation space with arm_joint_pos (7D).
+        self.observation_space["arm_joint_pos"] = spaces.Box(low=-4.0, high=4.0, shape=(7,), dtype=np.float32)
+
+    def _process_observation(self, raw_obs: dict) -> dict:
+        """Process raw observation from server, with arm_joint_pos support."""
+        obs = super()._process_observation(raw_obs)
+
+        # Add arm_joint_pos (best-effort coercion to (7,))
+        if "arm_joint_pos" in raw_obs:
+            jp = np.asarray(raw_obs["arm_joint_pos"], dtype=np.float32)
+            # Squeeze leading (1, ...) dims commonly returned by batched envs.
+            while jp.ndim > 0 and jp.shape[0] == 1:
+                jp = jp[0]
+            jp = jp.reshape(-1)
+            if jp.size >= 7:
+                obs["arm_joint_pos"] = jp[:7].astype(np.float32)
+            else:
+                obs["arm_joint_pos"] = np.zeros((7,), dtype=np.float32)
+        else:
+            obs["arm_joint_pos"] = np.zeros((7,), dtype=np.float32)
+
+        return obs
+
+
 def make_isaaclab_tactile_remote_env(
     server_host: str = "localhost",
     server_port: int = 5555,
@@ -477,6 +547,21 @@ def make_isaaclab_tactile_remote_env(
         IsaacLabTactileRemoteEnv instance
     """
     return IsaacLabTactileRemoteEnv(
+        server_host=server_host,
+        server_port=server_port,
+        timeout_ms=timeout_ms,
+        **kwargs,
+    )
+
+
+def make_isaaclab_tactile_remote_joint_env(
+    server_host: str = "localhost",
+    server_port: int = 5555,
+    timeout_ms: int = 30000,
+    **kwargs,
+) -> IsaacLabTactileRemoteJointEnv:
+    """Factory function for the joint-space remote IsaacLab tactile env."""
+    return IsaacLabTactileRemoteJointEnv(
         server_host=server_host,
         server_port=server_port,
         timeout_ms=timeout_ms,

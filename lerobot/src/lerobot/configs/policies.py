@@ -178,6 +178,17 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
         revision: str | None = None,
         **policy_kwargs: Any,
     ) -> T:
+        def _infer_policy_type_from_config(config_dict: dict[str, Any]) -> str | None:
+            """Best-effort inference for legacy checkpoints missing top-level 'type'."""
+            # SmolVLA configs contain several highly-specific fields.
+            if "vlm_model_name" in config_dict or "tactile_token_mode" in config_dict:
+                return "smolvla"
+            # XVLA-specific field
+            if "florence_config" in config_dict:
+                return "xvla"
+            # Diffusion/ACT/VQBeT/etc may overlap heavily; avoid risky guesses.
+            return None
+
         model_id = str(pretrained_name_or_path)
         config_file: str | None = None
         if Path(model_id).is_dir():
@@ -207,16 +218,38 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
         # apply cli overrides.
         # This is very ugly, ideally we'd like to be able to do that natively with draccus
         # something like --policy.path (in addition to --policy.type)
-        with draccus.config_type("json"):
-            orig_config = draccus.parse(cls, config_file, args=[])
-
         if config_file is None:
             raise FileNotFoundError(f"{CONFIG_NAME} not found in {model_id}")
 
         with open(config_file) as f:
+            raw_config = json.load(f)
+
+        # Backward compatibility: older checkpoints may not serialize top-level "type".
+        # draccus ChoiceRegistry requires it when parsing through the base class.
+        if "type" not in raw_config:
+            inferred_type = _infer_policy_type_from_config(raw_config)
+            if inferred_type is None:
+                raise ValueError(
+                    f"Checkpoint config at '{config_file}' is missing top-level 'type' and policy type "
+                    "could not be inferred. Please add 'type' to config.json (e.g. 'smolvla') "
+                    "or pass --policy.type on the command line."
+                )
+            logger.warning(
+                f"Checkpoint config is missing 'type'. Inferred policy type='{inferred_type}' "
+                "for backward compatibility."
+            )
+            raw_config["type"] = inferred_type
+            with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:
+                json.dump(raw_config, f)
+                config_file = f.name
+
+        with draccus.config_type("json"):
+            orig_config = draccus.parse(cls, config_file, args=[])
+
+        with open(config_file) as f:
             config = json.load(f)
 
-        config.pop("type")
+        config.pop("type", None)
         with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:
             json.dump(config, f)
             config_file = f.name

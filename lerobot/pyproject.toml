@@ -466,3 +466,7 @@ conflicts = [
         { extra = "all" },
     ],
 ]
+
+[tool.pytest.ini_options]
+# Keep test discovery scoped to LeRobot only (this repo vendors IsaacLab which has a huge test suite).
+testpaths = ["tests"]

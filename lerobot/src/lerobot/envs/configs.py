@@ -637,3 +637,91 @@ class IsaacLabTactileRemoteEnv(EnvConfig):
             "server_port": self.server_port,
             "timeout_ms": self.timeout_ms,
         }
+
+
+@EnvConfig.register_subclass("isaaclab_tactile_remote_joint")
+@dataclass
+class IsaacLabTactileRemoteJointEnv(EnvConfig):
+    """
+    Configuration for remote IsaacLab tactile environments with joint-space control.
+
+    Differences vs. `IsaacLabTactileRemoteEnv`:
+    - **State (9D)**: [arm_joint_pos(7), gripper_qpos(2)]
+    - **Action (8D)**: [arm_joint_pos_target(7), gripper(1)]
+    """
+
+    task: str = "pick_place"
+    fps: int = 30
+    episode_length: int = 300
+
+    # Remote server settings
+    server_host: str = "localhost"
+    server_port: int = 5555
+    timeout_ms: int = 30000  # 30 second timeout
+
+    # Image dimensions
+    observation_height: int = 224
+    observation_width: int = 224
+
+    # Camera keys (comma-separated)
+    camera_keys: str = "rgb_table,rgb_wrist"
+
+    # Tactile configuration
+    tactile_force_grid_shape: tuple[int, ...] = (2, 10, 12, 3)
+    tactile_resultant_force_shape: tuple[int, ...] | None = None
+
+    # Raw observation keys (joint-space state uses arm_joint_pos + gripper_qpos)
+    arm_joint_pos_key: str = "arm_joint_pos"
+    gripper_qpos_key: str = "gripper_qpos"
+    tactile_force_grid_key: str = "tactile_force_grid"
+    tactile_resultant_force_key: str | None = None
+
+    # Features and mapping
+    features: dict[str, PolicyFeature] = field(default_factory=dict)
+    features_map: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Set action feature (8D)
+        self.features[ACTION] = PolicyFeature(type=FeatureType.ACTION, shape=(8,))
+        self.features_map[ACTION] = ACTION
+
+        # Set state feature (9D)
+        self.features[OBS_STATE] = PolicyFeature(type=FeatureType.STATE, shape=(9,))
+        self.features_map[OBS_STATE] = OBS_STATE
+
+        # Add camera features
+        if self.camera_keys:
+            for cam_key in self.camera_keys.split(","):
+                cam_key = cam_key.strip()
+                if cam_key:
+                    feature_key = f"camera_{cam_key}"
+                    self.features[feature_key] = PolicyFeature(
+                        type=FeatureType.VISUAL,
+                        shape=(self.observation_height, self.observation_width, 3),
+                    )
+                    self.features_map[feature_key] = f"{OBS_IMAGES}.{cam_key}"
+
+        # Add tactile force grid feature
+        tactile_key = "observation.tactile.force_grid"
+        self.features[tactile_key] = PolicyFeature(
+            type=FeatureType.TACTILE,
+            shape=self.tactile_force_grid_shape,
+        )
+        self.features_map[tactile_key] = tactile_key
+
+        # Add optional tactile resultant force
+        if self.tactile_resultant_force_shape:
+            rf_key = "observation.tactile.resultant_force"
+            self.features[rf_key] = PolicyFeature(
+                type=FeatureType.TACTILE,
+                shape=self.tactile_resultant_force_shape,
+            )
+            self.features_map[rf_key] = rf_key
+
+    @property
+    def gym_kwargs(self) -> dict:
+        return {
+            "server_host": self.server_host,
+            "server_port": self.server_port,
+            "timeout_ms": self.timeout_ms,
+        }

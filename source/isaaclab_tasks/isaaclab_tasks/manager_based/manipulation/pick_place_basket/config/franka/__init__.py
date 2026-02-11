@@ -4,6 +4,7 @@
 import gymnasium as gym
 
 from . import (
+    pick_place_basket_joint_tacex_env_cfg,
     pick_place_basket_joint_pos_env_cfg,
     pick_place_basket_ik_rel_env_cfg,
     pick_place_basket_ik_rel_tacex_env_cfg,
@@ -48,6 +49,15 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": pick_place_basket_ik_rel_tacex_env_cfg.FrankaPickPlaceBasketTacExEnvCfg,
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Pick-Place-Basket-Franka-Joint-TacEx-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": pick_place_basket_joint_tacex_env_cfg.FrankaPickPlaceBasketJointTacExEnvCfg,
     },
     disable_env_checker=True,
 )

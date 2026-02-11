@@ -27,6 +27,7 @@ from lerobot.envs.configs import (
     IsaaclabArenaEnv,
     IsaacLabTactileEnv,
     IsaacLabTactileRemoteEnv,
+    IsaacLabTactileRemoteJointEnv,
     LiberoEnv,
     PushtEnv,
 )
@@ -35,6 +36,7 @@ from lerobot.policies.xvla.configuration_xvla import XVLAConfig
 from lerobot.processor import ProcessorStep
 from lerobot.processor.env_processor import (
     IsaaclabArenaProcessorStep,
+    IsaacLabTactileJointPolicyObservationProcessorStep,
     IsaacLabTactilePolicyActionProcessorStep,
     IsaacLabTactilePolicyObservationProcessorStep,
     LiberoProcessorStep,
@@ -108,30 +110,43 @@ def make_env_pre_post_processors(
         )
 
     # For IsaacLab Tactile environments, add the tactile-specific processors
-    if (
-        isinstance(env_cfg, (IsaacLabTactileEnv, IsaacLabTactileRemoteEnv))
-        or "isaaclab_tactile" in env_cfg.type
+    if isinstance(env_cfg, (IsaacLabTactileEnv, IsaacLabTactileRemoteEnv, IsaacLabTactileRemoteJointEnv)) or (
+        "isaaclab_tactile" in env_cfg.type
     ):
-        # Add observation processor
-        preprocessor_steps.append(
-            IsaacLabTactilePolicyObservationProcessorStep(
-                eef_pos_key=getattr(env_cfg, "eef_pos_key", "eef_pos"),
-                eef_quat_key=getattr(env_cfg, "eef_quat_key", "eef_quat"),
-                base_pos_key=getattr(env_cfg, "base_pos_key", "base_pos"),
-                base_quat_key=getattr(env_cfg, "base_quat_key", "base_quat"),
-                gripper_qpos_key=getattr(env_cfg, "gripper_qpos_key", "gripper_qpos"),
-                tactile_force_grid_key=getattr(env_cfg, "tactile_force_grid_key", "tactile_force_grid"),
-                tactile_resultant_force_key=getattr(env_cfg, "tactile_resultant_force_key", None),
-                camera_keys=getattr(env_cfg, "camera_keys", ""),
+        is_joint = isinstance(env_cfg, IsaacLabTactileRemoteJointEnv) or env_cfg.type.endswith("_joint")
+
+        if is_joint:
+            # Joint-space state: 9D [arm_joint_pos(7), gripper_qpos(2)]
+            preprocessor_steps.append(
+                IsaacLabTactileJointPolicyObservationProcessorStep(
+                    arm_joint_pos_key=getattr(env_cfg, "arm_joint_pos_key", "arm_joint_pos"),
+                    gripper_qpos_key=getattr(env_cfg, "gripper_qpos_key", "gripper_qpos"),
+                    tactile_force_grid_key=getattr(env_cfg, "tactile_force_grid_key", "tactile_force_grid"),
+                    tactile_resultant_force_key=getattr(env_cfg, "tactile_resultant_force_key", None),
+                    camera_keys=getattr(env_cfg, "camera_keys", ""),
+                )
             )
-        )
-        # Add action processor (base frame -> world frame conversion)
-        postprocessor_steps.append(
-            IsaacLabTactilePolicyActionProcessorStep(
-                base_quat_key="base_quat_w",
-                assume_fixed_base=True,  # Default to fixed base for tabletop manipulators
+            # No action postprocessor for joint control (direct targets).
+        else:
+            # EE-based state: 11D, plus action transform step (no-op for fixed base).
+            preprocessor_steps.append(
+                IsaacLabTactilePolicyObservationProcessorStep(
+                    eef_pos_key=getattr(env_cfg, "eef_pos_key", "eef_pos"),
+                    eef_quat_key=getattr(env_cfg, "eef_quat_key", "eef_quat"),
+                    base_pos_key=getattr(env_cfg, "base_pos_key", "base_pos"),
+                    base_quat_key=getattr(env_cfg, "base_quat_key", "base_quat"),
+                    gripper_qpos_key=getattr(env_cfg, "gripper_qpos_key", "gripper_qpos"),
+                    tactile_force_grid_key=getattr(env_cfg, "tactile_force_grid_key", "tactile_force_grid"),
+                    tactile_resultant_force_key=getattr(env_cfg, "tactile_resultant_force_key", None),
+                    camera_keys=getattr(env_cfg, "camera_keys", ""),
+                )
             )
-        )
+            postprocessor_steps.append(
+                IsaacLabTactilePolicyActionProcessorStep(
+                    base_quat_key="base_quat_w",
+                    assume_fixed_base=True,
+                )
+            )
 
     preprocessor = PolicyProcessorPipeline(steps=preprocessor_steps)
     postprocessor = PolicyProcessorPipeline(steps=postprocessor_steps)
@@ -250,6 +265,23 @@ def make_env(
             )
 
         vec_env = env_cls([make_remote_env for _ in range(n_envs)])
+        return {cfg.type: {0: vec_env}}
+
+    elif cfg.type == "isaaclab_tactile_remote_joint":
+        from lerobot.envs.isaaclab_tactile_remote import IsaacLabTactileRemoteJointEnv
+
+        def make_remote_joint_env():
+            return IsaacLabTactileRemoteJointEnv(
+                server_host=getattr(cfg, "server_host", "localhost"),
+                server_port=getattr(cfg, "server_port", 5555),
+                timeout_ms=getattr(cfg, "timeout_ms", 30000),
+                observation_height=getattr(cfg, "observation_height", 224),
+                observation_width=getattr(cfg, "observation_width", 224),
+                tactile_shape=getattr(cfg, "tactile_force_grid_shape", (2, 10, 12, 3)),
+                max_episode_steps=getattr(cfg, "episode_length", 300),
+            )
+
+        vec_env = env_cls([make_remote_joint_env for _ in range(n_envs)])
         return {cfg.type: {0: vec_env}}
 
     if cfg.gym_id not in gym_registry:
