@@ -354,45 +354,49 @@ class IsaacLabEnvWrapper:
         - Cube Z is below basket rim but above basket bottom
         """
         try:
-            # Get cube and basket from scene
-            cube = self.env.scene.get("cube", None)
-            basket = self.env.scene.get("basket", None)
-            
-            if cube is None or basket is None:
-                # Try alternative names
-                cube = self.env.scene.get("object", None)
-                basket = self.env.scene.get("goal", None)
-            
-            if cube is None or basket is None:
-                logger.debug("Could not find cube or basket in scene")
+            # InteractiveScene is index-based (scene["name"]), not dict.get().
+            cube = None
+            basket = None
+            robot = None
+            for key in ("cube", "object"):
+                try:
+                    cube = self.env.scene[key]
+                    break
+                except Exception:
+                    continue
+            for key in ("basket", "goal"):
+                try:
+                    basket = self.env.scene[key]
+                    break
+                except Exception:
+                    continue
+            for key in ("robot",):
+                try:
+                    robot = self.env.scene[key]
+                    break
+                except Exception:
+                    continue
+
+            if cube is None or basket is None or robot is None:
+                logger.debug("Could not resolve cube/basket/robot in scene for success check")
                 return False
-            
-            # Get positions relative to env origin
+
+            # Positions relative to env origin.
             env_origin = self.env.scene.env_origins[0]
-            
-            cube_pos = cube.data.root_pos_w[0] - env_origin
-            basket_pos = basket.data.root_pos_w[0] - env_origin
-            
-            cube_pos = cube_pos.cpu().numpy()
-            basket_pos = basket_pos.cpu().numpy()
-            
-            # Check if cube is within basket bounds
-            # Typical basket dimensions: ~0.15m radius, ~0.10m height
-            basket_radius = 0.12  # Allow some margin
-            basket_height = 0.15
-            
-            # XY distance from basket center
-            xy_dist = np.sqrt((cube_pos[0] - basket_pos[0])**2 + 
-                              (cube_pos[1] - basket_pos[1])**2)
-            
-            # Z: cube should be above basket bottom but below rim + margin
-            z_in_basket = (cube_pos[2] > basket_pos[2] - 0.02 and 
-                          cube_pos[2] < basket_pos[2] + basket_height + 0.05)
-            
-            is_success = (xy_dist < basket_radius) and z_in_basket
-            
-            return bool(is_success)
-            
+            cube_pos = (cube.data.root_pos_w[0] - env_origin).cpu().numpy()
+            basket_pos = (basket.data.root_pos_w[0] - env_origin).cpu().numpy()
+
+            # Match task termination logic approximately.
+            xy_dist = float(np.linalg.norm(cube_pos[:2] - basket_pos[:2]))
+            height_dist = float(cube_pos[2] - basket_pos[2])
+            in_basket = (xy_dist < 0.08) and (height_dist > 0.0) and (height_dist < (0.02 + 0.05))
+
+            # Require released/open gripper (same intent as task termination).
+            gripper_pos = robot.data.joint_pos[0, -2:].detach().cpu().numpy()
+            gripper_open = (abs(gripper_pos[0] - 0.04) < 0.005) and (abs(gripper_pos[1] - 0.04) < 0.005)
+
+            return bool(in_basket and gripper_open)
+
         except Exception as e:
             logger.debug(f"Success check failed: {e}")
             return False

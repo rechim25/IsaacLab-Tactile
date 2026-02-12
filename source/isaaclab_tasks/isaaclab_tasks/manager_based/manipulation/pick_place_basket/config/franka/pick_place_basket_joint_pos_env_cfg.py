@@ -181,13 +181,14 @@ class FrankaPickPlaceBasketEnvCfg(PickPlaceBasketEnvCfg):
             disable_gravity=False,
         )
 
-        # Basket - using a sorting bin scaled to appropriate size
+        # Basket - prefer an asset with stable local material references.
+        # This avoids unresolved SimReady texture dependencies seen with some bins.
         self.scene.basket = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Basket",
             init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0.15, 0.0203], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/sorting_bin_blue.usd",
-                scale=(1.0, 1.0, 2.0),  # Scaled to be a reasonable basket size
+                usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Mimic/nut_pour_task/nut_pour_assets/sorting_bowl_yellow.usd",
+                scale=(1.3, 1.3, 1.0),
                 rigid_props=basket_properties,
                 semantic_tags=[("class", "basket")],
             ),

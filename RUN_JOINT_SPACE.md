@@ -3,8 +3,36 @@ Record data:
 ```sh
 conda activate env_isaaclab
 
-./isaaclab.sh -p scripts/environments/state_machine/pick_place_basket_joint_tacex_sm.py   --num_envs 4 --num_demos 100 --enable_cameras --save_demos   --output_file ./datasets/pick_place_basket_joint_tacex_100.hdf5 --headless
+./isaaclab.sh -p scripts/environments/state_machine/pick_place_basket_tacex_sm.py \
+  --num_envs 4 \
+  --num_demos 100 \
+  --enable_cameras \
+  --save_demos \
+  --output_dir ./datasets/pick_place_basket_joint_tacex_100 \
+  --background_mode fixed \
+  --background_texture small_empty_house_4k.hdr \
+  --headless
 ```
+
+Optional background randomization:
+
+```sh
+--background_mode random
+```
+
+Notes:
+- HDF5 data is saved to `<output_dir>/data.hdf5`.
+- Collector defaults to `rendering_mode=balanced` (more stable temporal rendering at 224x224).
+- Collector forces `render_interval == decimation` to reduce temporal flicker artifacts.
+- Basket asset defaults to a material-stable bowl to avoid unresolved texture references during rendering.
+- Only successful episodes are saved to HDF5.
+- Successful episode videos are written to `<output_dir>/successful_videos/`.
+- Optional failed episode videos are written to `<output_dir>/unsuccessful_videos/` by adding
+  `--save_failed_videos`.
+- Per-episode metadata JSON is written to `<output_dir>/metadata/`.
+- Per-step phase labels are saved in HDF5 as `phase_id` (with `phase_name_map` attr).
+- Planner behavior is configured in `PickPlaceBasketStateMachine` (`approach_duration`, `descend_duration`,
+  `pre_grasp_pause`, `post_grasp_pause`, `pre_lift_pause`, orientation slack fields).
 
 Convert data to LeRobot:
 
@@ -14,7 +42,7 @@ conda activate smolvla
 cd /home/radu/IsaacLab-Tactile/lerobot
 
 python convert_pick_place_basket_joint_tacex.py \
-  --input /home/radu/IsaacLab-Tactile/datasets/pick_place_basket_joint_tacex_100.hdf5 \
+  --input /home/radu/IsaacLab-Tactile/datasets/pick_place_basket_joint_tacex_100/data.hdf5 \
   --output-dir /home/radu/IsaacLab-Tactile/lerobot/datasets \
   --repo-id pick_place_basket_joint_tacex_100_lerobot \
   --task "Pick and place the cube into the basket"
