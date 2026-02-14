@@ -45,11 +45,21 @@ def parse_args():
     parser.add_argument(
         "--env",
         type=str,
-        default="Isaac-Pick-Place-Basket-Franka-IK-Rel-TacEx-v0",
+        default="Isaac-Pick-Place-Basket-Franka-Joint-TacEx-v0",
         help="IsaacLab environment name",
     )
     parser.add_argument("--img_height", type=int, default=224, help="Camera image height")
     parser.add_argument("--img_width", type=int, default=224, help="Camera image width")
+    parser.add_argument(
+        "--background_texture",
+        type=str,
+        default="small_empty_house_4k.hdr",
+        help=(
+            "DomeLight HDR texture to match training background. "
+            "If a bare .hdr filename is provided, it is resolved under "
+            "'/NVIDIA/Assets/Skies/Indoor/'."
+        ),
+    )
     
     # AppLauncher args are added here
     from isaaclab.app import AppLauncher
@@ -76,6 +86,7 @@ import cv2
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+from isaaclab.utils.assets import NVIDIA_NUCLEUS_DIR
 
 
 class IsaacLabEnvWrapper:
@@ -92,15 +103,17 @@ class IsaacLabEnvWrapper:
     
     def __init__(
         self, 
-        env_name: str = "Isaac-Pick-Place-Basket-Franka-IK-Rel-TacEx-v0",
+        env_name: str = "Isaac-Pick-Place-Basket-Franka-Joint-TacEx-v0",
         device: str = "cuda:0",
         img_height: int = 224,
         img_width: int = 224,
+        background_texture: str = "small_empty_house_4k.hdr",
     ):
         self.env_name = env_name
         self.device = device
         self.img_height = img_height
         self.img_width = img_width
+        self.background_texture = background_texture
         self.env = None
         self._step_count = 0
         self._max_episode_steps = 300
@@ -127,6 +140,9 @@ class IsaacLabEnvWrapper:
         
         self.env = gym.make(self.env_name, cfg=env_cfg).unwrapped
 
+        # Match training background by setting dome light texture (same approach as collector).
+        self._configure_background()
+
         # Infer action space directly from the loaded environment.
         action_manager = getattr(self.env, "action_manager", None)
         inferred_action_dim = int(getattr(action_manager, "total_action_dim", 0) or 0)
@@ -149,6 +165,32 @@ class IsaacLabEnvWrapper:
         )
         logger.info(f"Sensors: wrist_cam={self.has_wrist_cam}, table_cam={self.has_table_cam}, "
                     f"gsmini_left={self.has_gsmini_left}, gsmini_right={self.has_gsmini_right}")
+
+    def _resolve_background_texture(self, texture: str) -> str:
+        if not texture:
+            return ""
+        # Allow passing just "small_empty_house_4k.hdr".
+        if texture.endswith(".hdr") and ("/" not in texture) and (":" not in texture):
+            return f"{NVIDIA_NUCLEUS_DIR}/Assets/Skies/Indoor/{texture}"
+        return texture
+
+    def _configure_background(self) -> None:
+        texture = self._resolve_background_texture(self.background_texture)
+        if not texture:
+            return
+        try:
+            light = self.env.scene["light"]
+            light_prim = light.prims[0]
+            texture_file_attr = light_prim.GetAttribute("inputs:texture:file")
+            intensity_attr = light_prim.GetAttribute("inputs:intensity")
+            color_attr = light_prim.GetAttribute("inputs:color")
+            texture_file_attr.Set(texture)
+            # Match collector defaults for appearance/reproducibility.
+            intensity_attr.Set(3800.0)
+            color_attr.Set((0.78, 0.78, 0.78))
+            logger.info(f"Background texture set to: {texture}")
+        except Exception as exc:
+            logger.warning(f"Failed to set background texture '{texture}': {exc}")
     
     def _extract_observation(self) -> dict:
         """Extract observation dict from current environment state."""
@@ -578,6 +620,7 @@ def main():
         device=args_cli.device,
         img_height=args_cli.img_height,
         img_width=args_cli.img_width,
+        background_texture=args_cli.background_texture,
     )
     
     # Start server

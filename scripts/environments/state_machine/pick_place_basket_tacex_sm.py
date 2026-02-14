@@ -611,7 +611,15 @@ def _check_success_from_buffer(buf: dict) -> bool:
 class DataRecorder:
     """Records video, joints, tactile, and actions for imitation learning."""
     
-    def __init__(self, output_dir: str, num_envs: int, planner_params: dict, save_failed_videos: bool = False):
+    def __init__(
+        self,
+        output_dir: str,
+        num_envs: int,
+        planner_params: dict,
+        save_failed_videos: bool = False,
+        policy_env_name: str = "Isaac-Pick-Place-Basket-Franka-Joint-TacEx-v0",
+        teacher_env_name: str = "Isaac-Pick-Place-Basket-Franka-IK-Rel-TacEx-v0",
+    ):
         self.num_envs = num_envs
         self.planner_params = planner_params
         self.save_failed_videos = bool(save_failed_videos)
@@ -624,6 +632,8 @@ class DataRecorder:
         self.video_dir = os.path.join(self.output_dir, "successful_videos")
         self.failed_video_dir = os.path.join(self.output_dir, "unsuccessful_videos")
         self.meta_dir = os.path.join(self.output_dir, "metadata")
+        self.policy_env_name = policy_env_name
+        self.teacher_env_name = teacher_env_name
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(self.video_dir, exist_ok=True)
         if self.save_failed_videos:
@@ -633,10 +643,17 @@ class DataRecorder:
         with h5py.File(self.output_file, "w") as f:
             f.create_group("data")
             f.attrs["format"] = "pick_place_basket_tacex"
+            # Store explicit schema metadata so conversion/eval cannot silently mix control modes.
+            f.attrs["env"] = self.policy_env_name
+            f.attrs["teacher_env"] = self.teacher_env_name
+            f.attrs["state_schema"] = "joint_state_9d:[arm_joint_pos(7),gripper_qpos(2)]"
+            f.attrs["action_schema"] = "joint_action_8d:[arm_joint_pos_target_abs(7),gripper_cmd(1)]"
+            f.attrs["teacher_control_mode"] = "ik_rel"
     
     def _empty_buffer(self):
         return {
             "actions": [],
+            "teacher_actions_ik": [],
             "joint_pos": [],
             "joint_vel": [],
             "ee_pos": [],
@@ -810,6 +827,10 @@ class DataRecorder:
             g.attrs["num_steps"] = len(buf["actions"])
             g.attrs["success"] = bool(is_success)
             g.attrs["background_texture"] = background_texture
+            g.attrs["policy_env"] = self.policy_env_name
+            g.attrs["teacher_env"] = self.teacher_env_name
+            g.attrs["state_schema"] = "joint_state_9d:[arm_joint_pos(7),gripper_qpos(2)]"
+            g.attrs["action_schema"] = "joint_action_8d:[arm_joint_pos_target_abs(7),gripper_cmd(1)]"
             g.attrs["phase_name_map"] = json.dumps(PickPlaceBasketStateMachine.PHASE_NAMES, sort_keys=True)
             g.attrs["seed"] = int(seed) if seed is not None else -1
             g.attrs["planner_params"] = json.dumps(self.planner_params, sort_keys=True)
@@ -828,6 +849,10 @@ class DataRecorder:
             "hdf5_keys": sorted([k for k, v in buf.items() if len(v) > 0]),
             "phase_histogram": phase_hist,
             "background_texture": background_texture,
+            "policy_env": self.policy_env_name,
+            "teacher_env": self.teacher_env_name,
+            "state_schema": "joint_state_9d:[arm_joint_pos(7),gripper_qpos(2)]",
+            "action_schema": "joint_action_8d:[arm_joint_pos_target_abs(7),gripper_cmd(1)]",
             "seed": int(seed) if seed is not None else None,
             "planner_params": self.planner_params,
             "video_path": video_path,
@@ -848,21 +873,24 @@ class DataRecorder:
 
 
 def main():
-    # Try TacEx environment first
+    # Teacher rollout env: keep IK-relative control for stable scripted motion,
+    # but record joint-space policy targets (8D absolute joints + gripper).
     try:
-        env_name = "Isaac-Pick-Place-Basket-Franka-IK-Rel-TacEx-v0"
-        env_cfg = parse_env_cfg(env_name, device=args_cli.device, num_envs=args_cli.num_envs)
+        teacher_env_name = "Isaac-Pick-Place-Basket-Franka-IK-Rel-TacEx-v0"
+        policy_env_name = "Isaac-Pick-Place-Basket-Franka-Joint-TacEx-v0"
+        env_cfg = parse_env_cfg(teacher_env_name, device=args_cli.device, num_envs=args_cli.num_envs)
         has_tacex = True
     except Exception:
-        env_name = "Isaac-Pick-Place-Basket-Franka-IK-Rel-v0"
-        env_cfg = parse_env_cfg(env_name, device=args_cli.device, num_envs=args_cli.num_envs)
+        teacher_env_name = "Isaac-Pick-Place-Basket-Franka-IK-Rel-v0"
+        policy_env_name = "Isaac-Pick-Place-Basket-Franka-Joint-TacEx-v0"
+        env_cfg = parse_env_cfg(teacher_env_name, device=args_cli.device, num_envs=args_cli.num_envs)
         has_tacex = False
         print("[WARN] TacEx env not found, using standard env (no tactile)")
     
     env_cfg.terminations.time_out = None
     # Match rendering cadence with control cadence to reduce temporal artifacts/flicker.
     env_cfg.sim.render_interval = env_cfg.decimation
-    env = gym.make(env_name, cfg=env_cfg).unwrapped
+    env = gym.make(teacher_env_name, cfg=env_cfg).unwrapped
     selected_background_texture = _configure_background_texture(
         env,
         mode=args_cli.background_mode,
@@ -892,6 +920,8 @@ def main():
             env.num_envs,
             planner_params,
             save_failed_videos=args_cli.save_failed_videos,
+            policy_env_name=policy_env_name,
+            teacher_env_name=teacher_env_name,
         )
         if args_cli.save_demos
         else None
@@ -903,7 +933,8 @@ def main():
     has_gsmini_left = "gsmini_left" in env.scene.sensors if hasattr(env.scene, "sensors") else False
     has_gsmini_right = "gsmini_right" in env.scene.sensors if hasattr(env.scene, "sensors") else False
     
-    print(f"[INFO] Environment: {env_name}")
+    print(f"[INFO] Teacher environment: {teacher_env_name}")
+    print(f"[INFO] Policy/eval environment: {policy_env_name}")
     print(f"[INFO] Background texture: {selected_background_texture}")
     print(f"[INFO] Seed: {run_seed}")
     print(f"[INFO] Sensors: wrist_cam={has_wrist_cam}, table_cam={has_table_cam}, "
@@ -952,19 +983,20 @@ def main():
             base_pos = robot.data.root_pos_w - env.scene.env_origins  # (num_envs, 3)
             base_quat = robot.data.root_quat_w  # (num_envs, 4)
             
-            # Compute action
+            # Compute IK teacher action for scripted rollout.
             des_pose, grip, speed = sm.compute(ee_pose, cube_pose, basket_pose)
             delta = (des_pose[:, :3] - ee_pose[:, :3]) * speed.unsqueeze(-1)
             q_err = _quat_mul_wxyz(des_pose[:, 3:7], _quat_conj_wxyz(ee_pose[:, 3:7]))
             rotvec = _quat_to_rotvec_wxyz(q_err).clamp(min=-0.35, max=0.35)
-            actions = torch.cat([delta, rotvec, grip.unsqueeze(-1)], -1)
-            
-            # Record (obs_t, action_t, phase_t) before stepping so dataset timing is explicit.
+            ik_actions = torch.cat([delta, rotvec, grip.unsqueeze(-1)], -1)
+
+            # Cache obs_t and metadata before stepping. We attach the joint-space action
+            # after env.step using post-step arm joints as the absolute target.
+            pending_steps: dict[int, tuple[dict, float]] = {}
             if recorder:
                 for i in range(env.num_envs):
                     if sm.sm_state[i] < sm.STATE_DONE:
                         step_data = {
-                            "actions": actions[i].cpu().numpy(),
                             "joint_pos": robot.data.joint_pos[i].cpu().numpy(),
                             "joint_vel": robot.data.joint_vel[i].cpu().numpy(),
                             "ee_pos": ee_pose[i, :3].cpu().numpy(),
@@ -1040,11 +1072,23 @@ def main():
                             tac_rgb = env.scene.sensors["gsmini_right"].data.output.get("tactile_rgb")
                             if tac_rgb is not None and tac_rgb.numel() > 0:
                                 step_data["force_photometric_right"] = _compute_pseudo_force_photometric(tac_rgb[i]).cpu().numpy()
-                        
-                        recorder.add_step(i, step_data)
+
+                        pending_steps[i] = (step_data, float(grip[i].item()))
             
             # Step environment
-            obs, _, terminated, truncated, _ = env.step(actions)
+            obs, _, terminated, truncated, _ = env.step(ik_actions)
+
+            # Finalize per-step labels with joint-space action targets.
+            if recorder and pending_steps:
+                for env_id, (step_data, gripper_cmd) in pending_steps.items():
+                    arm_target = robot.data.joint_pos[env_id, :7].cpu().numpy().astype(np.float32)
+                    joint_action = np.concatenate(
+                        [arm_target, np.array([gripper_cmd], dtype=np.float32)],
+                        axis=0,
+                    )
+                    step_data["actions"] = joint_action
+                    step_data["teacher_actions_ik"] = ik_actions[env_id].cpu().numpy()
+                    recorder.add_step(env_id, step_data)
             
             # Check for environment resets
             env_reset_mask = terminated | truncated

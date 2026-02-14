@@ -258,22 +258,26 @@ def main():
         
         demo = data_group[demo_name]
         
-        # Get environment name
-        env_name = args_cli.env
-        if env_name is None:
-            if "env" in f.attrs:
-                env_name = f.attrs["env"]
-            elif "env_name" in demo.attrs:
-                env_name = demo.attrs["env_name"]
-            else:
-                raise ValueError("Environment name not found. Specify with --env.")
-        
         # Load actions
         if args_cli.actions_key not in demo:
             raise KeyError(f"Missing '{args_cli.actions_key}' in demo '{demo_name}'.")
         
         actions = demo[args_cli.actions_key][:]
         num_frames = len(actions)
+
+        # Get environment name (prefer explicit CLI, then HDF5 attrs, then infer from action dim).
+        env_name = args_cli.env
+        if env_name is None:
+            if "env" in f.attrs:
+                env_name = f.attrs["env"]
+            elif "env_name" in demo.attrs:
+                env_name = demo.attrs["env_name"]
+            elif actions.ndim == 2 and actions.shape[1] == 8:
+                env_name = "Isaac-Pick-Place-Basket-Franka-Joint-TacEx-v0"
+            elif actions.ndim == 2 and actions.shape[1] == 7:
+                env_name = "Isaac-Pick-Place-Basket-Franka-IK-Rel-TacEx-v0"
+            else:
+                raise ValueError("Environment name not found/inferable. Specify with --env.")
         
         start = max(0, args_cli.start)
         end = args_cli.end if args_cli.end is not None else num_frames
@@ -347,12 +351,14 @@ def main():
             basket_quat=basket_quat_t,
         )
     
-    # Step once to initialize sensors
-    zero_action = torch.zeros((1, actions.shape[1]), dtype=torch.float32, device=args_cli.device)
-    if zero_action.shape[1] >= 7:
-        # Keep gripper open (positive -> open in IsaacLab BinaryJointAction).
-        zero_action[0, 6] = 1.0
-    env.step(zero_action)
+    # Step once to initialize sensors. For joint-space replay, avoid zero joint targets.
+    warmup_action = torch.zeros((1, actions.shape[1]), dtype=torch.float32, device=args_cli.device)
+    if actions.shape[1] == 8:
+        warmup_action[0, :7] = torch.from_numpy(actions[start][:7]).to(args_cli.device)
+        warmup_action[0, 7] = 1.0
+    elif actions.shape[1] >= 7:
+        warmup_action[0, actions.shape[1] - 1] = 1.0
+    env.step(warmup_action)
     
     # Initialize video writer
     writer = None

@@ -22,6 +22,9 @@ Optional background randomization:
 
 Notes:
 - HDF5 data is saved to `<output_dir>/data.hdf5`.
+- Collector executes scripted rollouts with an IK teacher, but writes joint-policy labels:
+  - `state = [arm_joint_pos(7), gripper_qpos(2)]`
+  - `action = [arm_joint_pos_target_abs(7), gripper_cmd(1)]`
 - Collector defaults to `rendering_mode=balanced` (more stable temporal rendering at 224x224).
 - Collector forces `render_interval == decimation` to reduce temporal flicker artifacts.
 - Basket asset defaults to a material-stable bowl to avoid unresolved texture references during rendering.

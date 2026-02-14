@@ -25,6 +25,14 @@ from lerobot.isaaclab_tactile.policy_io import (
 )
 
 
+def quat_wxyz_to_xyzw(q: np.ndarray) -> np.ndarray:
+    """Convert quaternion from IsaacLab (wxyz) to policy convention (xyzw)."""
+    q = np.asarray(q, dtype=np.float32)
+    if q.shape[-1] != 4:
+        raise ValueError(f"Expected quaternion with 4 components, got shape={q.shape}")
+    return np.array([q[1], q[2], q[3], q[0]], dtype=np.float32)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Convert IsaacLab HDF5 to LeRobot dataset format (canonical policy convention)",
@@ -120,8 +128,8 @@ def main():
     print(f"  Force grid: {args.num_fingertips} x {args.force_grid_height} x {args.force_grid_width} x 3")
 
     # Define dataset features
-features = {
-    "observation.state": {"dtype": "float32", "shape": (STATE_DIM,), "names": None},
+    features = {
+        "observation.state": {"dtype": "float32", "shape": (STATE_DIM,), "names": None},
         "action": {"dtype": "float32", "shape": (ACTION_DIM,), "names": None},
         # Image features with names for dataset_to_policy_features
         "observation.images.camera1": {
@@ -150,17 +158,17 @@ features = {
         features["debug.base_quat_w"] = {"dtype": "float32", "shape": (4,), "names": None}
 
     # Create dataset
-ds = LeRobotDataset.create(
+    ds = LeRobotDataset.create(
         repo_id=args.repo_id,
         root=f"{args.output_dir}/{args.repo_id}",
         fps=args.fps,
-    features=features,
+        features=features,
         robot_type=args.robot_type,
         use_videos=args.use_videos,
-)
+    )
 
     H, W = args.force_grid_height, args.force_grid_width
-scale = 1.0 / (H * W)
+    scale = 1.0 / (H * W)
 
     with h5py.File(args.input, "r") as f:
         demos = sorted(f["data"].keys())
@@ -168,25 +176,30 @@ scale = 1.0 / (H * W)
         print(f"\nProcessing {total_demos} demonstrations...")
 
         for idx, demo_name in enumerate(demos, 1):
-        demo = f["data"][demo_name]
-        T = demo["actions"].shape[0]
+            demo = f["data"][demo_name]
+            T = demo["actions"].shape[0]
 
             print(f"  [{idx}/{total_demos}] {demo_name}: {T} steps", end="\r")
 
-        for t in range(T):
+            for t in range(T):
                 # Extract raw data from HDF5
                 ee_pos_w = demo["ee_pos"][t].astype(np.float32)  # (3,)
-                ee_quat_w = demo["ee_quat"][t].astype(np.float32)  # (4,) - (x,y,z,w)
+                # Raw IsaacLab quaternions in our HDF5 are stored as wxyz.
+                ee_quat_w_raw = demo["ee_quat"][t].astype(np.float32)  # (4,) - (w,x,y,z)
                 gripper_qpos = demo["gripper_pos"][t].astype(np.float32)  # (2,)
 
                 # Get base pose (if available, otherwise use identity)
                 if "base_pos" in demo:
                     base_pos_w = demo["base_pos"][t].astype(np.float32)
-                    base_quat_w = demo["base_quat"][t].astype(np.float32)
+                    base_quat_w_raw = demo["base_quat"][t].astype(np.float32)  # (w,x,y,z)
                 else:
                     # Default to identity for fixed base robots
                     base_pos_w = np.zeros(3, dtype=np.float32)
-                    base_quat_w = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                    base_quat_w_raw = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # identity in wxyz
+
+                # Convert to policy convention expected by policy_io helpers (xyzw).
+                ee_quat_w = quat_wxyz_to_xyzw(ee_quat_w_raw)
+                base_quat_w = quat_wxyz_to_xyzw(base_quat_w_raw)
 
                 # Encode state using the shared adapter (11D)
                 state = encode_state_isaaclab_to_policy(
@@ -214,20 +227,20 @@ scale = 1.0 / (H * W)
 
                 # Build synthetic force grid from resultant forces
                 fL = demo["force_geometric_left"][t].astype(np.float32)  # (3,)
-            fR = demo["force_geometric_right"][t].astype(np.float32)  # (3,)
-            grid = np.stack([fL, fR], axis=0)[:, None, None, :] * scale
+                fR = demo["force_geometric_right"][t].astype(np.float32)  # (3,)
+                grid = np.stack([fL, fR], axis=0)[:, None, None, :] * scale
                 grid = np.broadcast_to(grid, (args.num_fingertips, H, W, 3)).copy().astype(np.float32)
 
                 # Build frame dict
-            frame = {
+                frame = {
                     "task": args.task,
                     "observation.state": state.astype(np.float32),
                     "action": action.astype(np.float32),
                     # Map table->camera1, wrist->camera2 to match SmolVLA policy expectations
                     "observation.images.camera1": demo["rgb_table"][t],
                     "observation.images.camera2": demo["rgb_wrist"][t],
-                "observation.tactile.force_grid": grid,
-            }
+                    "observation.tactile.force_grid": grid,
+                }
 
                 # Optionally store debug fields
                 if args.store_debug_fields:
@@ -236,12 +249,12 @@ scale = 1.0 / (H * W)
                     frame["debug.base_pos_w"] = base_pos_w
                     frame["debug.base_quat_w"] = base_quat_w
 
-            ds.add_frame(frame)
+                ds.add_frame(frame)
 
-        ds.save_episode()
+            ds.save_episode()
 
     print(f"\n\nFinalizing dataset...")
-ds.finalize()
+    ds.finalize()
     print(f"✓ Successfully wrote LeRobot dataset to: {ds.root}")
     print(f"  Total episodes: {len(demos)}")
     print(f"  Total frames: {len(ds)}")
