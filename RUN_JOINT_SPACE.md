@@ -98,3 +98,15 @@ lerobot-eval \
   --eval.n_episodes=10 \
   --rename_map='{"observation.images.rgb_table": "observation.images.camera1", "observation.images.rgb_wrist": "observation.images.camera2"}'
 ```
+
+Visualize lerobot dataset:
+```sh
+lerobot-dataset-viz \
+  --repo-id pick_place_basket_joint_tacex_200_lerobot \
+  --root /home/radu/IsaacLab-Tactile/lerobot/datasets/pick_place_basket_joint_tacex_200_lerobot \
+  --mode local \
+  --episode-index 0 \
+  --display-compressed-images True \
+  --save 1 \
+  --output-dir /home/radu/IsaacLab-Tactile/lerobot/outputs/viz_rrd
+```
