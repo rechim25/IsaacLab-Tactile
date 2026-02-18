@@ -262,31 +262,39 @@ class PickPlaceBasketStateMachine:
     """
     
     STATE_INIT = 0
-    STATE_APPROACH_CUBE = 1
-    STATE_DESCEND_CUBE = 2
-    STATE_PRE_GRASP_PAUSE = 3
-    STATE_GRASP = 4
-    STATE_POST_GRASP_PAUSE = 5
-    STATE_PRE_LIFT_PAUSE = 6
-    STATE_LIFT = 7
-    STATE_TRANSPORT = 8
-    STATE_DESCEND_BASKET = 9
-    STATE_RELEASE = 10
-    STATE_RETREAT = 11
-    STATE_DONE = 12
-    NUM_STATES = 13
+    STATE_PRE_APPROACH_CUBE = 1
+    STATE_ALIGN_ABOVE_CUBE = 2
+    STATE_DESCEND_CUBE = 3
+    STATE_PRE_GRASP_PAUSE = 4
+    STATE_GRASP = 5
+    STATE_GRASP_HOLD = 6
+    STATE_LIFT_CLEAR = 7
+    STATE_LIFT_ASCEND = 8
+    STATE_CARRY_MID_1 = 9
+    STATE_CARRY_MID_2 = 10
+    STATE_PRE_PLACE_HOVER = 11
+    STATE_DESCEND_BASKET = 12
+    STATE_RELEASE = 13
+    STATE_POST_RELEASE_PAUSE = 14
+    STATE_RETREAT = 15
+    STATE_DONE = 16
+    NUM_STATES = 17
     PHASE_NAMES = {
         STATE_INIT: "init",
-        STATE_APPROACH_CUBE: "approach_cube",
+        STATE_PRE_APPROACH_CUBE: "pre_approach_cube",
+        STATE_ALIGN_ABOVE_CUBE: "align_above_cube",
         STATE_DESCEND_CUBE: "descend_cube",
         STATE_PRE_GRASP_PAUSE: "pre_grasp_pause",
         STATE_GRASP: "grasp",
-        STATE_POST_GRASP_PAUSE: "post_grasp_pause",
-        STATE_PRE_LIFT_PAUSE: "pre_lift_pause",
-        STATE_LIFT: "lift",
-        STATE_TRANSPORT: "transport",
+        STATE_GRASP_HOLD: "grasp_hold",
+        STATE_LIFT_CLEAR: "lift_clear",
+        STATE_LIFT_ASCEND: "lift_ascend",
+        STATE_CARRY_MID_1: "carry_mid_1",
+        STATE_CARRY_MID_2: "carry_mid_2",
+        STATE_PRE_PLACE_HOVER: "pre_place_hover",
         STATE_DESCEND_BASKET: "descend_basket",
         STATE_RELEASE: "release",
+        STATE_POST_RELEASE_PAUSE: "post_release_pause",
         STATE_RETREAT: "retreat",
         STATE_DONE: "done",
     }
@@ -305,38 +313,108 @@ class PickPlaceBasketStateMachine:
         self.des_gripper_state = torch.ones(num_envs, device=device)
         self.default_quat = torch.zeros(num_envs, 4, device=device)
         self.target_grasp_quat = torch.zeros(num_envs, 4, device=device)
+        self.carry_mid_1 = torch.zeros(num_envs, 3, device=device)
+        self.carry_mid_2 = torch.zeros(num_envs, 3, device=device)
+        self.pre_place_hover = torch.zeros(num_envs, 3, device=device)
+        self.approach_lateral = torch.zeros(num_envs, device=device)
+        self.carry_lateral_1 = torch.zeros(num_envs, device=device)
+        self.carry_lateral_2 = torch.zeros(num_envs, device=device)
+        self.grasp_entry_offset = torch.zeros(num_envs, 2, device=device)
+        self.progress_gain = torch.ones(num_envs, device=device)
+        self.progress_shape = torch.ones(num_envs, device=device)
+        self.duration_scale = torch.ones(num_envs, device=device)
+        self.prev_ee_pos = torch.zeros(num_envs, 3, device=device)
+        self.prev_cube_pos = torch.zeros(num_envs, 3, device=device)
+        self.lift_ref_cube_z = torch.zeros(num_envs, device=device)
+        self.filtered_pos = torch.zeros(num_envs, 3, device=device)
+        self.filtered_quat = torch.zeros(num_envs, 4, device=device)
+        self.filtered_speed = torch.ones(num_envs, device=device)
+        self.effective_max_pos_step = torch.full((num_envs,), 0.012, device=device)
+        self.filter_initialized = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.has_prev = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.grasp_stable_count = torch.zeros(num_envs, dtype=torch.int32, device=device)
+        self.hover_align_count = torch.zeros(num_envs, dtype=torch.int32, device=device)
         
         # Height parameters
-        self.approach_height = 0.12
-        self.grasp_height = -0.015
-        self.lift_height = 0.15
-        self.arc_height = 0.22
-        self.basket_drop_height = 0.08
+        self.pre_approach_height = 0.19
+        self.align_height = 0.13
+        self.grasp_height = -0.004
+        self.min_grasp_target_z = 0.02
+        self.lift_clear_height = 0.15
+        self.lift_height = 0.205
+        self.carry_height = 0.24
+        self.pre_place_height = 0.15
+        self.basket_drop_height = 0.075
+        self.retreat_height = 0.18
         
         # Timing parameters
-        self.approach_duration = 1.2
-        self.descend_duration = 0.75
-        self.grasp_duration = 0.4
-        self.lift_duration = 0.6
-        self.transport_duration = 0.9
-        self.basket_descend_duration = 0.4
-        self.release_duration = 0.2
-        self.retreat_duration = 0.35
-        # Very small pauses at contact transitions.
-        self.pre_grasp_pause = 0.06
-        self.post_grasp_pause = 0.08
-        self.pre_lift_pause = 0.06
+        self.pre_approach_duration = 1.5
+        self.align_duration = 1.0
+        self.descend_duration = 1.05
+        self.pre_grasp_pause = 0.1
+        self.grasp_duration = 0.75
+        self.grasp_hold_min = 0.45
+        self.lift_clear_duration = 0.8
+        self.lift_duration = 1.0
+        self.carry_mid_1_duration = 0.9
+        self.carry_mid_2_duration = 0.9
+        self.pre_place_hover_duration = 0.85
+        self.basket_descend_duration = 0.95
+        self.release_duration = 0.35
+        self.post_release_pause = 0.2
+        self.retreat_duration = 0.85
         
-        self.blend_threshold = 0.92
-        self.base_speed = 2.1
-        self.near_contact_speed = 1.2
+        self.blend_threshold = 0.98
+        self.base_speed = 1.45
+        self.carry_speed = 1.25
+        self.near_contact_speed = 0.8
         self.threshold = 0.02
-        self.orient_blend_start = 0.45
+        self.orient_blend_start = 0.72
         self.orient_blend_end = 0.95
+        # Motion profile randomization kept narrow for natural but non-snappy trajectories.
+        # Approach/descend jitter tightened to eliminate left-right wobble during cube
+        # approach while keeping transport-phase diversity.
+        self.timing_jitter = 0.05
+        self.profile_gain_min = 0.97
+        self.profile_gain_max = 1.03
+        self.profile_shape_min = 0.94
+        self.profile_shape_max = 1.06
+        self.midpoint_xy_jitter = 0.028
+        self.midpoint_z_jitter = 0.012
+        self.pre_place_xy_jitter = 0.014
+        self.approach_lateral_jitter = 0.004
+        self.grasp_entry_xy_offset = 0.003
+
+        # Output trajectory smoothing (reduces snapping at phase boundaries)
+        self.max_pos_step = 0.012
+        self.max_pos_step_near = 0.005
+        self.pos_filter_alpha = 0.7
+        self.speed_filter_alpha = 0.22
+        self.max_speed_step = 0.08
+        self.quat_filter_alpha = 0.35
+
+        # Distance-aware fine-motion control near cube.
+        # Below near_cube_dist the step cap and speed are linearly reduced toward
+        # the *_near values; above far_cube_dist normal parameters are used.
+        self.near_cube_dist = 0.04
+        self.far_cube_dist = 0.12
+        self.near_cube_speed = 0.45
+
+        # Stability gates
+        self.grasp_dist_threshold = 0.055
+        self.grasp_motion_coupling_threshold = 0.012
+        self.grasp_stable_required = 8
+        self.clearance_margin = 0.06
+        self.min_lift_delta_z = 0.03
+        self.hover_xy_threshold = 0.022
+        self.hover_align_required = 6
+
         # Orientation slack randomization (radians).
-        self.yaw_slack = np.deg2rad(10.0)
-        self.roll_slack = np.deg2rad(4.0)
-        self.pitch_slack = np.deg2rad(4.0)
+        # Tightened to reduce wrist wobble near cube, keeping just enough
+        # variation for dataset diversity.
+        self.yaw_slack = np.deg2rad(5.0)
+        self.roll_slack = np.deg2rad(2.0)
+        self.pitch_slack = np.deg2rad(2.0)
         
     def reset(self, env_ids=None, ee_pos=None, ee_quat=None):
         if env_ids is None:
@@ -351,6 +429,19 @@ class PickPlaceBasketStateMachine:
         self.sm_wait_time[env_ids] = 0.05
         self.interp_progress[env_ids] = 0.0
         self.des_gripper_state[env_ids] = 1.0
+        self.progress_gain[env_ids] = 1.0
+        self.progress_shape[env_ids] = 1.0
+        self.duration_scale[env_ids] = 1.0
+        self.grasp_stable_count[env_ids] = 0
+        self.hover_align_count[env_ids] = 0
+        self.approach_lateral[env_ids] = 0.0
+        self.carry_lateral_1[env_ids] = 0.0
+        self.carry_lateral_2[env_ids] = 0.0
+        self.grasp_entry_offset[env_ids] = 0.0
+        self.lift_ref_cube_z[env_ids] = 0.0
+        self.filtered_speed[env_ids] = self.base_speed
+        self.filter_initialized[env_ids] = False
+        self.has_prev[env_ids] = False
         
         if ee_pos is not None and len(env_ids_tensor) > 0:
             self.des_ee_pose[env_ids_tensor, :3] = ee_pos[env_ids_tensor]
@@ -358,25 +449,76 @@ class PickPlaceBasketStateMachine:
             self.des_ee_pose[env_ids_tensor, 4:7] = 0.0
             self.interp_start[env_ids_tensor] = ee_pos[env_ids_tensor]
             self.interp_target[env_ids_tensor] = ee_pos[env_ids_tensor]
+            self.prev_ee_pos[env_ids_tensor] = ee_pos[env_ids_tensor]
+            self.filtered_pos[env_ids_tensor] = ee_pos[env_ids_tensor]
         if ee_quat is not None and len(env_ids_tensor) > 0:
             self.default_quat[env_ids_tensor] = _quat_norm_wxyz(ee_quat[env_ids_tensor])
             self.target_grasp_quat[env_ids_tensor] = self.default_quat[env_ids_tensor]
+            self.filtered_quat[env_ids_tensor] = self.default_quat[env_ids_tensor]
     
     def _smooth_step(self, t: torch.Tensor) -> torch.Tensor:
         t = torch.clamp(t, 0.0, 1.0)
         return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
     
-    def _arc_interpolate(self, start, end, t, arc_height):
+    def _arc_interpolate(self, start, end, t, arc_height, lateral_scale: Optional[torch.Tensor] = None):
         t_smooth = self._smooth_step(t)
         pos = start + (end - start) * t_smooth.unsqueeze(-1)
         base_z = start[:, 2] + (end[:, 2] - start[:, 2]) * t_smooth
         arc_offset = 4.0 * arc_height * t_smooth * (1.0 - t_smooth)
         pos[:, 2] = base_z + arc_offset
+        if lateral_scale is not None:
+            dir_xy = end[:, :2] - start[:, :2]
+            dir_norm = torch.linalg.norm(dir_xy, dim=-1, keepdim=True).clamp(min=1e-6)
+            unit_xy = dir_xy / dir_norm
+            perp_xy = torch.stack([-unit_xy[:, 1], unit_xy[:, 0]], dim=-1)
+            lateral_profile = 4.0 * t_smooth * (1.0 - t_smooth)
+            pos[:, :2] = pos[:, :2] + perp_xy * (lateral_scale.unsqueeze(-1) * lateral_profile.unsqueeze(-1))
         return pos
     
     def _linear_interpolate(self, start, end, t):
         t_smooth = self._smooth_step(t)
         return start + (end - start) * t_smooth.unsqueeze(-1)
+
+    def _sample_motion_profile(self, mask: torch.Tensor):
+        if not mask.any():
+            return
+        n = int(mask.sum().item())
+        self.progress_gain[mask] = self.profile_gain_min + (
+            self.profile_gain_max - self.profile_gain_min
+        ) * torch.rand(n, device=self.device)
+        self.progress_shape[mask] = self.profile_shape_min + (
+            self.profile_shape_max - self.profile_shape_min
+        ) * torch.rand(n, device=self.device)
+        self.duration_scale[mask] = (
+            1.0 + (torch.rand(n, device=self.device) * 2.0 - 1.0) * self.timing_jitter
+        ).clamp(0.82, 1.22)
+
+    def _profiled_progress(self) -> torch.Tensor:
+        t = self.interp_progress.clamp(0.0, 1.0)
+        p = self.progress_shape.clamp(min=0.2)
+        num = torch.pow(t, p)
+        den = num + torch.pow(1.0 - t, p) + 1e-8
+        return (num / den).clamp(0.0, 1.0)
+
+    def _start_motion_phase(
+        self,
+        trans: torch.Tensor,
+        next_state: int,
+        start: torch.Tensor,
+        target: torch.Tensor,
+    ) -> None:
+        self.sm_state[trans] = next_state
+        self.interp_progress[trans] = 0.0
+        self.interp_start[trans] = start[trans]
+        self.interp_target[trans] = target[trans]
+        self._sample_motion_profile(trans)
+
+    def _grasp_target_from_cube(self, cube_pos: torch.Tensor) -> torch.Tensor:
+        target = cube_pos.clone()
+        z = target[:, 2] + self.grasp_height
+        z = torch.maximum(z, torch.full_like(z, self.min_grasp_target_z))
+        target[:, 2] = z
+        return target
             
     def _compute_target_grasp_quat(self, cube_quat: torch.Tensor, default_quat: torch.Tensor) -> torch.Tensor:
         # Align wrist yaw approximately with cube yaw and inject small random slack.
@@ -397,12 +539,22 @@ class PickPlaceBasketStateMachine:
         p = p.clamp(0.0, 1.0)
         return _quat_slerp_wxyz(self.default_quat[mask], self.target_grasp_quat[mask], p[mask])
 
-    def compute(self, ee_pose, cube_pose, basket_pose):
+    def compute(self, ee_pose, cube_pose, basket_pose, gripper_qpos: Optional[torch.Tensor] = None):
         self.sm_wait_time -= self.dt
         ee_pos = ee_pose[:, :3]
         cube_pos = cube_pose[:, :3]
         basket_pos = basket_pose[:, :3]
         des_speed = torch.ones(self.num_envs, device=self.device) * self.base_speed
+        prof_t = self._profiled_progress()
+
+        init_prev_mask = ~self.has_prev
+        if init_prev_mask.any():
+            self.prev_ee_pos[init_prev_mask] = ee_pos[init_prev_mask]
+            self.prev_cube_pos[init_prev_mask] = cube_pos[init_prev_mask]
+            self.has_prev[init_prev_mask] = True
+
+        ee_delta = ee_pos - self.prev_ee_pos
+        cube_delta = cube_pos - self.prev_cube_pos
         
         for s in range(self.NUM_STATES):
             mask = self.sm_state == s
@@ -415,36 +567,74 @@ class PickPlaceBasketStateMachine:
                 self.des_gripper_state[mask] = 1.0
                 trans = mask & (self.sm_wait_time <= 0)
                 if trans.any():
-                    self.sm_state[trans] = self.STATE_APPROACH_CUBE
-                    self.interp_progress[trans] = 0.0
-                    self.interp_start[trans] = ee_pos[trans]
                     target = cube_pos.clone()
-                    target[:, 2] += self.approach_height
-                    self.interp_target[trans] = target[trans]
+                    target[:, 2] += self.pre_approach_height
+                    self._start_motion_phase(trans, self.STATE_PRE_APPROACH_CUBE, ee_pos, target)
+                    self.approach_lateral[trans] = (
+                        (torch.rand_like(self.approach_lateral[trans]) * 2.0 - 1.0)
+                        * self.approach_lateral_jitter
+                    )
                     self.target_grasp_quat[trans] = self._compute_target_grasp_quat(
                         cube_pose[trans, 3:7], self.default_quat[trans]
                     )
                 
-            elif s == self.STATE_APPROACH_CUBE:
-                self.interp_progress[mask] += self.dt / self.approach_duration
-                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, self.interp_progress)
+            elif s == self.STATE_PRE_APPROACH_CUBE:
+                self.interp_progress[mask] += (
+                    self.dt / self.pre_approach_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._arc_interpolate(
+                    self.interp_start,
+                    self.interp_target,
+                    prof_t,
+                    arc_height=0.012,
+                    lateral_scale=self.approach_lateral,
+                )
                 self.des_ee_pose[mask, :3] = interp_pos[mask]
-                self.des_ee_pose[mask, 3:7] = self._blended_quat(mask, self.interp_progress)
+                self.des_ee_pose[mask, 3:7] = self._blended_quat(mask, prof_t)
                 self.des_gripper_state[mask] = 1.0
+                des_speed[mask] = self.base_speed * 0.95
                 trans = mask & (self.interp_progress >= self.blend_threshold)
                 if trans.any():
-                    self.sm_state[trans] = self.STATE_DESCEND_CUBE
-                    self.interp_progress[trans] = 0.0
-                    self.interp_start[trans] = interp_pos[trans]
                     target = cube_pos.clone()
-                    target[:, 2] += self.grasp_height
-                    self.interp_target[trans] = target[trans]
+                    target[:, 2] += self.align_height
+                    self._start_motion_phase(trans, self.STATE_ALIGN_ABOVE_CUBE, interp_pos, target)
+
+            elif s == self.STATE_ALIGN_ABOVE_CUBE:
+                self.interp_progress[mask] += (
+                    self.dt / self.align_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._arc_interpolate(
+                    self.interp_start,
+                    self.interp_target,
+                    prof_t,
+                    arc_height=0.006,
+                    lateral_scale=0.5 * self.approach_lateral,
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
+                self.des_ee_pose[mask, 3:7] = self._blended_quat(mask, prof_t)
+                self.des_gripper_state[mask] = 1.0
+                des_speed[mask] = self.base_speed * 0.9
+                trans = mask & (self.interp_progress >= self.blend_threshold)
+                if trans.any():
+                    target = self._grasp_target_from_cube(cube_pos)
+                    offset = (
+                        (torch.rand((self.num_envs, 2), device=self.device) * 2.0 - 1.0)
+                        * self.grasp_entry_xy_offset
+                    )
+                    self.grasp_entry_offset[trans] = offset[trans]
+                    target[:, :2] = target[:, :2] + self.grasp_entry_offset
+                    self._start_motion_phase(trans, self.STATE_DESCEND_CUBE, interp_pos, target)
                 
             elif s == self.STATE_DESCEND_CUBE:
-                self.interp_progress[mask] += self.dt / self.descend_duration
-                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, self.interp_progress)
+                self.interp_progress[mask] += (
+                    self.dt / self.descend_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, prof_t)
                 self.des_ee_pose[mask, :3] = interp_pos[mask]
-                self.des_ee_pose[mask, 3:7] = self._blended_quat(mask, self.interp_progress)
+                self.des_ee_pose[mask, 3:7] = self._blended_quat(mask, prof_t)
                 self.des_gripper_state[mask] = 1.0
                 des_speed[mask] = self.near_contact_speed
                 trans = mask & (self.interp_progress >= 1.0)
@@ -453,8 +643,7 @@ class PickPlaceBasketStateMachine:
                     self.sm_wait_time[trans] = self.pre_grasp_pause
                 
             elif s == self.STATE_PRE_GRASP_PAUSE:
-                target = cube_pos.clone()
-                target[:, 2] += self.grasp_height
+                target = self._grasp_target_from_cube(cube_pos)
                 self.des_ee_pose[mask, :3] = target[mask]
                 self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
                 self.des_gripper_state[mask] = 1.0
@@ -463,111 +652,235 @@ class PickPlaceBasketStateMachine:
                 if trans.any():
                     self.sm_state[trans] = self.STATE_GRASP
                     self.sm_wait_time[trans] = self.grasp_duration
+                    self.grasp_stable_count[trans] = 0
                 
             elif s == self.STATE_GRASP:
-                target = cube_pos.clone()
-                target[:, 2] += self.grasp_height
+                target = self._grasp_target_from_cube(cube_pos)
                 self.des_ee_pose[mask, :3] = target[mask]
                 self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
                 self.des_gripper_state[mask] = -1.0
                 des_speed[mask] = self.near_contact_speed
                 trans = mask & (self.sm_wait_time <= 0)
                 if trans.any():
-                    self.sm_state[trans] = self.STATE_POST_GRASP_PAUSE
-                    self.sm_wait_time[trans] = self.post_grasp_pause
-                
-            elif s == self.STATE_POST_GRASP_PAUSE:
-                target = cube_pos.clone()
-                target[:, 2] += self.grasp_height
-                self.des_ee_pose[mask, :3] = target[mask]
-                self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
-                self.des_gripper_state[mask] = -1.0
-                des_speed[mask] = self.near_contact_speed
-                trans = mask & (self.sm_wait_time <= 0)
-                if trans.any():
-                    self.sm_state[trans] = self.STATE_PRE_LIFT_PAUSE
-                    self.sm_wait_time[trans] = self.pre_lift_pause
+                    self.sm_state[trans] = self.STATE_GRASP_HOLD
+                    self.sm_wait_time[trans] = self.grasp_hold_min
+                    self.grasp_stable_count[trans] = 0
 
-            elif s == self.STATE_PRE_LIFT_PAUSE:
-                target = cube_pos.clone()
-                target[:, 2] += self.grasp_height
+            elif s == self.STATE_GRASP_HOLD:
+                target = self._grasp_target_from_cube(cube_pos)
                 self.des_ee_pose[mask, :3] = target[mask]
                 self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
                 self.des_gripper_state[mask] = -1.0
                 des_speed[mask] = self.near_contact_speed
-                trans = mask & (self.sm_wait_time <= 0)
+
+                ee_cube_dist = torch.linalg.norm(cube_pos - ee_pos, dim=-1)
+                coupling_err = torch.linalg.norm(cube_delta - ee_delta, dim=-1)
+                if gripper_qpos is not None:
+                    gripper_closed = torch.mean(gripper_qpos, dim=-1) < 0.026
+                else:
+                    gripper_closed = torch.ones_like(ee_cube_dist, dtype=torch.bool)
+                stable = (
+                    (ee_cube_dist < self.grasp_dist_threshold)
+                    & (coupling_err < self.grasp_motion_coupling_threshold)
+                    & gripper_closed
+                )
+                self.grasp_stable_count[mask] = torch.where(
+                    stable[mask],
+                    self.grasp_stable_count[mask] + 1,
+                    torch.zeros_like(self.grasp_stable_count[mask]),
+                )
+
+                trans = (
+                    mask
+                    & (self.sm_wait_time <= 0)
+                    & (self.grasp_stable_count >= self.grasp_stable_required)
+                )
                 if trans.any():
-                    self.sm_state[trans] = self.STATE_LIFT
-                    self.interp_progress[trans] = 0.0
-                    self.interp_start[trans] = target[trans]
+                    lift_target = cube_pos.clone()
+                    lift_target[:, 2] = self.lift_clear_height
+                    self._start_motion_phase(trans, self.STATE_LIFT_CLEAR, ee_pos, lift_target)
+
+            elif s == self.STATE_LIFT_CLEAR:
+                self.interp_progress[mask] += (
+                    self.dt / self.lift_clear_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, prof_t)
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
+                self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
+                self.des_gripper_state[mask] = -1.0
+                des_speed[mask] = self.near_contact_speed
+                trans = mask & (self.interp_progress >= self.blend_threshold)
+                if trans.any():
                     lift_target = cube_pos.clone()
                     lift_target[:, 2] = self.lift_height
-                    self.interp_target[trans] = lift_target[trans]
+                    lift_target[:, :2] = 0.82 * cube_pos[:, :2] + 0.18 * basket_pos[:, :2]
+                    self.lift_ref_cube_z[trans] = cube_pos[trans, 2]
+                    self._start_motion_phase(trans, self.STATE_LIFT_ASCEND, interp_pos, lift_target)
                 
-            elif s == self.STATE_LIFT:
-                self.interp_progress[mask] += self.dt / self.lift_duration
-                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, self.interp_progress)
+            elif s == self.STATE_LIFT_ASCEND:
+                self.interp_progress[mask] += (
+                    self.dt / self.lift_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, prof_t)
                 self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
                 self.des_gripper_state[mask] = -1.0
                 des_speed[mask] = self.near_contact_speed
-                trans = mask & (self.interp_progress >= self.blend_threshold)
+                lift_delta_ok = cube_pos[:, 2] > (self.lift_ref_cube_z + self.min_lift_delta_z)
+                fallback_ok = self.interp_progress >= 1.0
+                clearance_ok = lift_delta_ok | fallback_ok
+                trans = mask & (self.interp_progress >= self.blend_threshold) & clearance_ok
                 if trans.any():
-                    self.sm_state[trans] = self.STATE_TRANSPORT
-                    self.interp_progress[trans] = 0.0
-                    self.interp_start[trans] = interp_pos[trans]
-                    target = basket_pos.clone()
-                    target[:, 2] += self.approach_height
-                    self.interp_target[trans] = target[trans]
+                    mid_1 = 0.45 * cube_pos + 0.55 * basket_pos
+                    mid_1[:, 2] = self.carry_height + (
+                        (torch.rand(self.num_envs, device=self.device) * 2.0 - 1.0)
+                        * self.midpoint_z_jitter
+                    )
+                    xy_jitter = (torch.rand(self.num_envs, 2, device=self.device) * 2.0 - 1.0) * self.midpoint_xy_jitter
+                    mid_1[:, :2] += xy_jitter
+                    self.carry_lateral_1[trans] = (
+                        (torch.rand_like(self.carry_lateral_1[trans]) * 2.0 - 1.0)
+                        * (0.8 * self.midpoint_xy_jitter)
+                    )
+                    self.carry_mid_1[trans] = mid_1[trans]
+                    self._start_motion_phase(trans, self.STATE_CARRY_MID_1, interp_pos, self.carry_mid_1)
                 
-            elif s == self.STATE_TRANSPORT:
-                self.interp_progress[mask] += self.dt / self.transport_duration
-                arc_extra = self.arc_height - self.lift_height
-                interp_pos = self._arc_interpolate(self.interp_start, self.interp_target, self.interp_progress, arc_extra)
+            elif s == self.STATE_CARRY_MID_1:
+                self.interp_progress[mask] += (
+                    self.dt / self.carry_mid_1_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                arc_extra = (self.carry_height - self.lift_height) * 0.7
+                interp_pos = self._arc_interpolate(
+                    self.interp_start,
+                    self.interp_target,
+                    prof_t,
+                    arc_extra,
+                    lateral_scale=self.carry_lateral_1,
+                )
                 self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
                 self.des_gripper_state[mask] = -1.0
+                des_speed[mask] = self.carry_speed
                 trans = mask & (self.interp_progress >= self.blend_threshold)
                 if trans.any():
-                    self.sm_state[trans] = self.STATE_DESCEND_BASKET
-                    self.interp_progress[trans] = 0.0
-                    self.interp_start[trans] = interp_pos[trans]
-                    target = basket_pos.clone()
-                    target[:, 2] += self.basket_drop_height
-                    self.interp_target[trans] = target[trans]
+                    mid_2 = 0.2 * cube_pos + 0.8 * basket_pos
+                    mid_2[:, 2] = self.carry_height + (
+                        (torch.rand(self.num_envs, device=self.device) * 2.0 - 1.0)
+                        * self.midpoint_z_jitter
+                    )
+                    xy_jitter = (torch.rand(self.num_envs, 2, device=self.device) * 2.0 - 1.0) * self.midpoint_xy_jitter
+                    mid_2[:, :2] += xy_jitter * 0.75
+                    self.carry_lateral_2[trans] = (
+                        (torch.rand_like(self.carry_lateral_2[trans]) * 2.0 - 1.0)
+                        * (0.6 * self.midpoint_xy_jitter)
+                    )
+                    self.carry_mid_2[trans] = mid_2[trans]
+                    self._start_motion_phase(trans, self.STATE_CARRY_MID_2, interp_pos, self.carry_mid_2)
+
+            elif s == self.STATE_CARRY_MID_2:
+                self.interp_progress[mask] += (
+                    self.dt / self.carry_mid_2_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                arc_extra = (self.carry_height - self.lift_height) * 0.55
+                interp_pos = self._arc_interpolate(
+                    self.interp_start,
+                    self.interp_target,
+                    prof_t,
+                    arc_extra,
+                    lateral_scale=self.carry_lateral_2,
+                )
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
+                self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
+                self.des_gripper_state[mask] = -1.0
+                des_speed[mask] = self.carry_speed * 0.95
+                trans = mask & (self.interp_progress >= self.blend_threshold)
+                if trans.any():
+                    hover_target = basket_pos.clone()
+                    hover_target[:, 2] = self.pre_place_height
+                    hover_jitter = (torch.rand(self.num_envs, 2, device=self.device) * 2.0 - 1.0) * self.pre_place_xy_jitter
+                    hover_target[:, :2] += hover_jitter
+                    self.pre_place_hover[trans] = hover_target[trans]
+                    self.hover_align_count[trans] = 0
+                    self._start_motion_phase(trans, self.STATE_PRE_PLACE_HOVER, interp_pos, self.pre_place_hover)
+
+            elif s == self.STATE_PRE_PLACE_HOVER:
+                self.interp_progress[mask] += (
+                    self.dt / self.pre_place_hover_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, prof_t)
+                self.des_ee_pose[mask, :3] = interp_pos[mask]
+                self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
+                self.des_gripper_state[mask] = -1.0
+                des_speed[mask] = self.near_contact_speed * 1.05
+                align_err = torch.linalg.norm(ee_pos[:, :2] - self.pre_place_hover[:, :2], dim=-1)
+                align_ok = align_err < self.hover_xy_threshold
+                self.hover_align_count[mask] = torch.where(
+                    align_ok[mask],
+                    self.hover_align_count[mask] + 1,
+                    torch.zeros_like(self.hover_align_count[mask]),
+                )
+                trans = (
+                    mask
+                    & (self.interp_progress >= self.blend_threshold)
+                    & (self.hover_align_count >= self.hover_align_required)
+                )
+                if trans.any():
+                    target = self.pre_place_hover.clone()
+                    target[:, 2] = basket_pos[:, 2] + self.basket_drop_height
+                    self._start_motion_phase(trans, self.STATE_DESCEND_BASKET, interp_pos, target)
                 
             elif s == self.STATE_DESCEND_BASKET:
-                self.interp_progress[mask] += self.dt / self.basket_descend_duration
-                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, self.interp_progress)
+                self.interp_progress[mask] += (
+                    self.dt / self.basket_descend_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, prof_t)
                 self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = self.target_grasp_quat[mask]
                 self.des_gripper_state[mask] = -1.0
+                des_speed[mask] = self.near_contact_speed
                 trans = mask & (self.interp_progress >= 1.0)
                 if trans.any():
                     self.sm_state[trans] = self.STATE_RELEASE
                     self.sm_wait_time[trans] = self.release_duration
                 
             elif s == self.STATE_RELEASE:
-                target = basket_pos.clone()
-                target[:, 2] += self.basket_drop_height
+                target = self.interp_target.clone()
+                self.des_ee_pose[mask, :3] = target[mask]
+                self.des_ee_pose[mask, 3:7] = self.default_quat[mask]
+                self.des_gripper_state[mask] = 1.0
+                des_speed[mask] = self.near_contact_speed
+                trans = mask & (self.sm_wait_time <= 0)
+                if trans.any():
+                    self.sm_state[trans] = self.STATE_POST_RELEASE_PAUSE
+                    self.sm_wait_time[trans] = self.post_release_pause
+
+            elif s == self.STATE_POST_RELEASE_PAUSE:
+                target = self.interp_target.clone()
                 self.des_ee_pose[mask, :3] = target[mask]
                 self.des_ee_pose[mask, 3:7] = self.default_quat[mask]
                 self.des_gripper_state[mask] = 1.0
                 trans = mask & (self.sm_wait_time <= 0)
                 if trans.any():
-                    self.sm_state[trans] = self.STATE_RETREAT
-                    self.interp_progress[trans] = 0.0
-                    self.interp_start[trans] = target[trans]
                     retreat_target = basket_pos.clone()
-                    retreat_target[:, 2] += self.approach_height
-                    self.interp_target[trans] = retreat_target[trans]
+                    retreat_target[:, 2] = self.retreat_height
+                    self._start_motion_phase(trans, self.STATE_RETREAT, ee_pos, retreat_target)
                 
             elif s == self.STATE_RETREAT:
-                self.interp_progress[mask] += self.dt / self.retreat_duration
-                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, self.interp_progress)
+                self.interp_progress[mask] += (
+                    self.dt / self.retreat_duration
+                ) * self.progress_gain[mask] / self.duration_scale[mask].clamp(min=0.2)
+                prof_t = self._profiled_progress()
+                interp_pos = self._linear_interpolate(self.interp_start, self.interp_target, prof_t)
                 self.des_ee_pose[mask, :3] = interp_pos[mask]
                 self.des_ee_pose[mask, 3:7] = self.default_quat[mask]
                 self.des_gripper_state[mask] = 1.0
+                des_speed[mask] = self.base_speed * 0.95
                 trans = mask & (self.interp_progress >= self.blend_threshold)
                 if trans.any():
                     self.sm_state[trans] = self.STATE_DONE
@@ -576,8 +889,55 @@ class PickPlaceBasketStateMachine:
                 self.des_ee_pose[mask, :3] = ee_pos[mask]
                 self.des_ee_pose[mask, 3:7] = self.default_quat[mask]
                 self.des_gripper_state[mask] = 1.0
-        
-        return self.des_ee_pose.clone(), self.des_gripper_state.clone(), des_speed
+
+        self.prev_ee_pos.copy_(ee_pos)
+        self.prev_cube_pos.copy_(cube_pos)
+
+        # Distance-aware fine-motion: reduce speed and step cap when close to
+        # cube during approach/descend/grasp phases.
+        ee_cube_dist = torch.linalg.norm(ee_pos - cube_pos, dim=-1)
+        proximity_phases = (
+            (self.sm_state == self.STATE_PRE_APPROACH_CUBE)
+            | (self.sm_state == self.STATE_ALIGN_ABOVE_CUBE)
+            | (self.sm_state == self.STATE_DESCEND_CUBE)
+            | (self.sm_state == self.STATE_PRE_GRASP_PAUSE)
+            | (self.sm_state == self.STATE_GRASP)
+            | (self.sm_state == self.STATE_GRASP_HOLD)
+        )
+        prox_t = ((ee_cube_dist - self.near_cube_dist) / max(self.far_cube_dist - self.near_cube_dist, 1e-6)).clamp(0.0, 1.0)
+        near_speed = self.near_cube_speed + (des_speed - self.near_cube_speed) * prox_t
+        des_speed = torch.where(proximity_phases, near_speed, des_speed)
+        near_step = self.max_pos_step_near + (self.max_pos_step - self.max_pos_step_near) * prox_t
+        self.effective_max_pos_step = torch.where(proximity_phases, near_step, torch.full_like(near_step, self.max_pos_step))
+
+        if (~self.filter_initialized).any():
+            init_mask = ~self.filter_initialized
+            self.filtered_pos[init_mask] = self.des_ee_pose[init_mask, :3]
+            self.filtered_quat[init_mask] = _quat_norm_wxyz(self.des_ee_pose[init_mask, 3:7])
+            self.filtered_speed[init_mask] = des_speed[init_mask]
+            self.filter_initialized[init_mask] = True
+
+        # Position smoothing with hard per-step cap and alpha blend.
+        pos_error = self.des_ee_pose[:, :3] - self.filtered_pos
+        pos_error = pos_error * self.pos_filter_alpha
+        pos_norm = torch.linalg.norm(pos_error, dim=-1, keepdim=True).clamp(min=1e-8)
+        step_cap = self.effective_max_pos_step.unsqueeze(-1)
+        pos_scale = torch.minimum(torch.ones_like(pos_norm), step_cap / pos_norm)
+        self.filtered_pos = self.filtered_pos + pos_error * pos_scale
+
+        # Quaternion smoothing with slerp.
+        quat_t = torch.full((self.num_envs,), self.quat_filter_alpha, device=self.device)
+        self.filtered_quat = _quat_slerp_wxyz(self.filtered_quat, self.des_ee_pose[:, 3:7], quat_t)
+
+        # Smooth speed to avoid abrupt acceleration spikes at state transitions.
+        speed_err = (des_speed - self.filtered_speed) * self.speed_filter_alpha
+        speed_err = torch.clamp(speed_err, -self.max_speed_step, self.max_speed_step)
+        self.filtered_speed = self.filtered_speed + speed_err
+
+        out_pose = self.des_ee_pose.clone()
+        out_pose[:, :3] = self.filtered_pos
+        out_pose[:, 3:7] = self.filtered_quat
+        return out_pose, self.des_gripper_state.clone(), self.filtered_speed.clone()
 
 
 def _check_success_from_buffer(buf: dict) -> bool:
@@ -899,15 +1259,50 @@ def main():
     
     sm = PickPlaceBasketStateMachine(env_cfg.sim.dt * env_cfg.decimation, env.num_envs, env.device)
     run_seed = getattr(args_cli, "seed", None)
+    max_attempt_steps = 400
     planner_params = {
-        "approach_duration": sm.approach_duration,
+        "pre_approach_duration": sm.pre_approach_duration,
+        "align_duration": sm.align_duration,
         "descend_duration": sm.descend_duration,
         "grasp_duration": sm.grasp_duration,
+        "grasp_hold_min": sm.grasp_hold_min,
+        "lift_clear_duration": sm.lift_clear_duration,
         "lift_duration": sm.lift_duration,
+        "carry_mid_1_duration": sm.carry_mid_1_duration,
+        "carry_mid_2_duration": sm.carry_mid_2_duration,
+        "pre_place_hover_duration": sm.pre_place_hover_duration,
+        "basket_descend_duration": sm.basket_descend_duration,
         "pre_grasp_pause": sm.pre_grasp_pause,
-        "post_grasp_pause": sm.post_grasp_pause,
-        "pre_lift_pause": sm.pre_lift_pause,
         "near_contact_speed": sm.near_contact_speed,
+        "carry_speed": sm.carry_speed,
+        "profile_gain_range": [sm.profile_gain_min, sm.profile_gain_max],
+        "profile_shape_range": [sm.profile_shape_min, sm.profile_shape_max],
+        "timing_jitter": sm.timing_jitter,
+        "midpoint_xy_jitter": sm.midpoint_xy_jitter,
+        "midpoint_z_jitter": sm.midpoint_z_jitter,
+        "pre_place_xy_jitter": sm.pre_place_xy_jitter,
+        "approach_lateral_jitter": sm.approach_lateral_jitter,
+        "grasp_entry_xy_offset": sm.grasp_entry_xy_offset,
+        "grasp_height": sm.grasp_height,
+        "min_grasp_target_z": sm.min_grasp_target_z,
+        "max_pos_step": sm.max_pos_step,
+        "max_pos_step_near": sm.max_pos_step_near,
+        "near_cube_dist": sm.near_cube_dist,
+        "far_cube_dist": sm.far_cube_dist,
+        "near_cube_speed": sm.near_cube_speed,
+        "pos_filter_alpha": sm.pos_filter_alpha,
+        "quat_filter_alpha": sm.quat_filter_alpha,
+        "speed_filter_alpha": sm.speed_filter_alpha,
+        "max_speed_step": sm.max_speed_step,
+        "grasp_dist_threshold": sm.grasp_dist_threshold,
+        "grasp_motion_coupling_threshold": sm.grasp_motion_coupling_threshold,
+        "grasp_stable_required": int(sm.grasp_stable_required),
+        "clearance_margin": sm.clearance_margin,
+        "min_lift_delta_z": sm.min_lift_delta_z,
+        "hover_xy_threshold": sm.hover_xy_threshold,
+        "hover_align_required": int(sm.hover_align_required),
+        "joint_action_label_source": "ik_controller_joint_pos_target",
+        "max_attempt_steps": int(max_attempt_steps),
         "yaw_slack_deg": float(np.rad2deg(sm.yaw_slack)),
         "roll_slack_deg": float(np.rad2deg(sm.roll_slack)),
         "pitch_slack_deg": float(np.rad2deg(sm.pitch_slack)),
@@ -945,6 +1340,7 @@ def main():
     initial_ee_pos = ee_frame.data.target_pos_w[:, 0] - env.scene.env_origins
     initial_ee_quat = ee_frame.data.target_quat_w[:, 0]
     sm.reset(ee_pos=initial_ee_pos, ee_quat=initial_ee_quat)
+    episode_step_count = torch.zeros(env.num_envs, dtype=torch.int32, device=env.device)
     
     demo_count = 0
     
@@ -984,14 +1380,21 @@ def main():
             base_quat = robot.data.root_quat_w  # (num_envs, 4)
             
             # Compute IK teacher action for scripted rollout.
-            des_pose, grip, speed = sm.compute(ee_pose, cube_pose, basket_pose)
+            des_pose, grip, speed = sm.compute(
+                ee_pose,
+                cube_pose,
+                basket_pose,
+                gripper_qpos=robot.data.joint_pos[:, -2:],
+            )
+            active_mask = sm.sm_state < sm.STATE_DONE
+            episode_step_count[active_mask] += 1
             delta = (des_pose[:, :3] - ee_pose[:, :3]) * speed.unsqueeze(-1)
             q_err = _quat_mul_wxyz(des_pose[:, 3:7], _quat_conj_wxyz(ee_pose[:, 3:7]))
             rotvec = _quat_to_rotvec_wxyz(q_err).clamp(min=-0.35, max=0.35)
             ik_actions = torch.cat([delta, rotvec, grip.unsqueeze(-1)], -1)
 
-            # Cache obs_t and metadata before stepping. We attach the joint-space action
-            # after env.step using post-step arm joints as the absolute target.
+            # Cache obs_t metadata. We attach action labels after env.step from
+            # the controller's actual joint-position target for this same step.
             pending_steps: dict[int, tuple[dict, float]] = {}
             if recorder:
                 for i in range(env.num_envs):
@@ -1010,7 +1413,7 @@ def main():
                             "basket_quat": basket_pose[i, 3:7].cpu().numpy(),
                             "phase_id": int(sm.sm_state[i].item()),
                         }
-                        
+
                         # Camera data
                         if has_wrist_cam:
                             rgb = env.scene.sensors["wrist_cam"].data.output.get("rgb")
@@ -1078,10 +1481,12 @@ def main():
             # Step environment
             obs, _, terminated, truncated, _ = env.step(ik_actions)
 
-            # Finalize per-step labels with joint-space action targets.
+            # Finalize per-step recording for obs_t/action_t.
+            # The action label is taken from the IK controller's joint target used
+            # for this step (arm) plus the scalar gripper command.
             if recorder and pending_steps:
                 for env_id, (step_data, gripper_cmd) in pending_steps.items():
-                    arm_target = robot.data.joint_pos[env_id, :7].cpu().numpy().astype(np.float32)
+                    arm_target = robot.data.joint_pos_target[env_id, :7].detach().cpu().numpy().astype(np.float32)
                     joint_action = np.concatenate(
                         [arm_target, np.array([gripper_cmd], dtype=np.float32)],
                         axis=0,
@@ -1089,6 +1494,31 @@ def main():
                     step_data["actions"] = joint_action
                     step_data["teacher_actions_ik"] = ik_actions[env_id].cpu().numpy()
                     recorder.add_step(env_id, step_data)
+
+            # Hard-stop attempts that exceed max step budget so stalled runs are recorded as failures.
+            timeout_ids = (episode_step_count > max_attempt_steps).nonzero(as_tuple=False).squeeze(-1)
+            if len(timeout_ids) > 0:
+                timeout_list = timeout_ids.tolist()
+                for env_id in timeout_list:
+                    if recorder:
+                        saved_ok = recorder.save_episode(env_id, selected_background_texture, run_seed)
+                        if saved_ok:
+                            demo_count += 1
+                            print(f"[INFO] Saved demo {demo_count}/{args_cli.num_demos} (timeout fallback)")
+                        else:
+                            print(
+                                f"[INFO] Marked failed attempt due to step timeout "
+                                f"(env={env_id}, steps={int(episode_step_count[env_id].item())})"
+                            )
+                # Reset only timed-out environments and restart state machines there.
+                env.reset(env_ids=timeout_ids)
+                ee_pos_timeout = ee_frame.data.target_pos_w[:, 0] - env.scene.env_origins
+                ee_quat_timeout = ee_frame.data.target_quat_w[:, 0]
+                sm.reset(timeout_ids, ee_pos_timeout, ee_quat_timeout)
+                episode_step_count[timeout_ids] = 0
+                # Prevent duplicate processing in reset branch below for these envs.
+                terminated[timeout_ids] = False
+                truncated[timeout_ids] = False
             
             # Check for environment resets
             env_reset_mask = terminated | truncated
@@ -1108,6 +1538,7 @@ def main():
                 
                 ee_quat_fresh = ee_frame.data.target_quat_w[:, 0]
                 sm.reset(env_reset_ids.tolist(), ee_pos_fresh, ee_quat_fresh)
+                episode_step_count[env_reset_ids] = 0
             
             # Check for state machine DONE state
             done_envs = (sm.sm_state == sm.STATE_DONE).nonzero(as_tuple=False).squeeze(-1)
@@ -1126,6 +1557,7 @@ def main():
                 
                 ee_quat_current = ee_frame.data.target_quat_w[:, 0]
                 sm.reset(done_envs.tolist(), ee_pos_current, ee_quat_current)
+                episode_step_count[done_envs] = 0
             
             if demo_count >= args_cli.num_demos:
                 break

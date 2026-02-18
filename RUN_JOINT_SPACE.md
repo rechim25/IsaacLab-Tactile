@@ -34,8 +34,21 @@ Notes:
   `--save_failed_videos`.
 - Per-episode metadata JSON is written to `<output_dir>/metadata/`.
 - Per-step phase labels are saved in HDF5 as `phase_id` (with `phase_name_map` attr).
-- Planner behavior is configured in `PickPlaceBasketStateMachine` (`approach_duration`, `descend_duration`,
-  `pre_grasp_pause`, `post_grasp_pause`, `pre_lift_pause`, orientation slack fields).
+- Planner now uses multi-waypoint motion with slower contact phases:
+  - `pre_approach -> align_above_cube -> descend -> grasp_hold -> lift_clear -> carry_mid_1 -> carry_mid_2 -> pre_place_hover -> descend_place`.
+- Recorded joint actions are taken from the IK controller's actual arm joint targets (`joint_pos_target`) for
+  the same timestep, so `obs_t` is paired with the controller command used at `t` (not post-step realized joints).
+- Planner metadata includes timing/gating/diversity/smoothing parameters in episode attrs and JSON.
+- Expected successful demo length is typically higher than before (roughly 140-220 steps).
+- Approach wobble reduction: lateral jitter (0.004 m), grasp entry offset (0.003 m), orientation slack
+  (yaw ±5°, roll/pitch ±2°), and timing/profile randomization are tightened compared to earlier versions.
+  Transport phases keep their original diversity parameters.
+- Distance-aware fine motion: when EE is within 0.12 m of the cube during approach/descend/grasp phases,
+  speed and position-step cap are linearly reduced; at 0.04 m or closer the step cap drops to 0.005 m
+  (from 0.012 m) and speed to 0.45 (from baseline). This produces visibly smaller, smoother increments
+  near contact without slowing the far approach.
+- Orientation blending starts at 72% progress (up from 45%) so the wrist rotates toward the grasp
+  orientation only in the final phase of approach, avoiding early left-right rotation artifacts.
 
 Convert data to LeRobot:
 
@@ -57,8 +70,8 @@ Train SmolVLA:
 conda activate smolvla
 
 lerobot-train \
-  --dataset.repo_id=pick_place_basket_joint_tacex_100_lerobot \
-  --dataset.root=/home/radu/IsaacLab-Tactile/lerobot/datasets/pick_place_basket_joint_tacex_100_lerobot \
+  --dataset.repo_id=pick_place_basket_joint_tacex_200_lerobot_v2 \
+  --dataset.root=/home/radu/IsaacLab-Tactile/lerobot/datasets/pick_place_basket_joint_tacex_200_lerobot_v2 \
   --policy.type=smolvla \
   --policy.device=cuda \
   --policy.vlm_model_name=HuggingFaceTB/SmolVLM2-500M-Video-Instruct \
@@ -67,9 +80,10 @@ lerobot-train \
   --policy.empty_cameras=1 \
   --batch_size=8 \
   --steps=20000 \
-  --output_dir=outputs/smolvla_joint_pick_place_basket \
+  --output_dir=outputs/smolvla_joint_pick_place_basket_200_v2 \
   --wandb.enable=true \
-  --wandb.project=smolvla-tactile
+  --wandb.project=smolvla-tactile \
+  --job_name joint_200_no_tactile_v2_run1
 ```
 
 Evaluation:
@@ -88,10 +102,11 @@ conda activate env_isaaclab
 conda activate smolvla
 
 lerobot-eval \
-  --policy.path=/home/radu/IsaacLab-Tactile/lerobot/outputs/smolvla_joint_pick_place_basket/checkpoints/last/pretrained_model \
+  --policy.path=/home/radu/IsaacLab-Tactile/lerobot/outputs/smolvla_joint_pick_place_basket_200_v2/checkpoints/last/pretrained_model \
   --env.type=isaaclab_tactile_remote_joint \
   --env.server_host=localhost \
   --env.server_port=5555 \
+  --env.task="Pick and place the cube into the basket" \
   --env.observation_height=224 \
   --env.observation_width=224 \
   --eval.batch_size=1 \
@@ -109,4 +124,9 @@ lerobot-dataset-viz \
   --display-compressed-images True \
   --save 1 \
   --output-dir /home/radu/IsaacLab-Tactile/lerobot/outputs/viz_rrd
+```
+
+then on a local machine run:
+```sh
+rerun /home/radu/IsaacLab-Tactile/lerobot/outputs/viz_rrd/pick_place_basket_joint_tacex_200_lerobot_episode_0.rrd
 ```

@@ -71,6 +71,7 @@ class IsaacLabTactileRemoteEnv(gym.Env):
         tactile_shape: tuple[int, ...] = (2, 10, 12, 3),
         max_episode_steps: int = 300,
         render_mode: str | None = "rgb_array",
+        task_description: str = "pick and place",
     ):
         """
         Initialize remote environment client.
@@ -84,6 +85,7 @@ class IsaacLabTactileRemoteEnv(gym.Env):
             tactile_shape: Shape of tactile force grid (N_fingertips, H, W, 3)
             max_episode_steps: Maximum steps per episode
             render_mode: Render mode ("rgb_array" or None)
+            task_description: Language task prompt passed to language-conditioned policies
         """
         super().__init__()
         
@@ -104,12 +106,14 @@ class IsaacLabTactileRemoteEnv(gym.Env):
         self._socket = None
         self._connected = False
         
-        # Cache last RGB frame for rendering
-        self._last_rgb: np.ndarray | None = None
+        # Cache last RGB frames for rendering.
+        # Eval video writer calls env.render(), so we compose table|wrist there.
+        self._last_rgb_table: np.ndarray | None = None
+        self._last_rgb_wrist: np.ndarray | None = None
         
         # Task description for language-conditioned policies
         # (empty string means no language instruction)
-        self._task_description = "pick and place"
+        self._task_description = task_description
         
         # Define action space (7D: delta_pos, delta_rot, gripper)
         self.action_space = spaces.Box(
@@ -282,8 +286,9 @@ class IsaacLabTactileRemoteEnv(gym.Env):
         obs = self._process_observation(response.get("obs", {}))
         info = response.get("info", {})
         
-        # Cache rgb_table for render()
-        self._last_rgb = obs.get("rgb_table", None)
+        # Cache both camera streams for render()
+        self._last_rgb_table = obs.get("rgb_table", None)
+        self._last_rgb_wrist = obs.get("rgb_wrist", None)
         
         return obs, info
     
@@ -317,8 +322,9 @@ class IsaacLabTactileRemoteEnv(gym.Env):
         truncated = self._step_count >= self.max_episode_steps
         info = response.get("info", {})
         
-        # Cache rgb_table for render()
-        self._last_rgb = obs.get("rgb_table", None)
+        # Cache both camera streams for render()
+        self._last_rgb_table = obs.get("rgb_table", None)
+        self._last_rgb_wrist = obs.get("rgb_wrist", None)
         
         return obs, reward, terminated, truncated, info
     
@@ -440,16 +446,34 @@ class IsaacLabTactileRemoteEnv(gym.Env):
         return obs
     
     def render(self) -> np.ndarray | None:
-        """Render the environment by returning the cached rgb_table frame."""
+        """Render the environment as side-by-side table and wrist views."""
         if self.render_mode != "rgb_array":
             return None
-        
-        # Return cached rgb_table from last step/reset
-        if isinstance(self._last_rgb, np.ndarray) and self._last_rgb.ndim == 3:
-            return self._last_rgb
-        
-        # Fallback: return a black frame
-        return np.zeros((self.observation_height, self.observation_width, 3), dtype=np.uint8)
+
+        table = self._last_rgb_table
+        wrist = self._last_rgb_wrist
+
+        if not (isinstance(table, np.ndarray) and table.ndim == 3):
+            table = np.zeros((self.observation_height, self.observation_width, 3), dtype=np.uint8)
+        if not (isinstance(wrist, np.ndarray) and wrist.ndim == 3):
+            wrist = np.zeros((self.observation_height, self.observation_width, 3), dtype=np.uint8)
+
+        # Ensure both frames are HxWx3 and same spatial size before concatenation.
+        if table.shape[2] != 3:
+            table = np.zeros((self.observation_height, self.observation_width, 3), dtype=np.uint8)
+        if wrist.shape[2] != 3:
+            wrist = np.zeros((self.observation_height, self.observation_width, 3), dtype=np.uint8)
+
+        if table.shape[:2] != wrist.shape[:2]:
+            h = max(table.shape[0], wrist.shape[0], self.observation_height)
+            w = max(table.shape[1], wrist.shape[1], self.observation_width)
+            table_fixed = np.zeros((h, w, 3), dtype=np.uint8)
+            wrist_fixed = np.zeros((h, w, 3), dtype=np.uint8)
+            table_fixed[: table.shape[0], : table.shape[1]] = table
+            wrist_fixed[: wrist.shape[0], : wrist.shape[1]] = wrist
+            table, wrist = table_fixed, wrist_fixed
+
+        return np.concatenate([table, wrist], axis=1)
     
     def close(self) -> None:
         """Close the environment and disconnect from server."""
@@ -480,6 +504,7 @@ class IsaacLabTactileRemoteJointEnv(IsaacLabTactileRemoteEnv):
         tactile_shape: tuple[int, ...] = (2, 10, 12, 3),
         max_episode_steps: int = 300,
         render_mode: str | None = "rgb_array",
+        task_description: str = "pick and place",
     ):
         super().__init__(
             server_host=server_host,
@@ -490,6 +515,7 @@ class IsaacLabTactileRemoteJointEnv(IsaacLabTactileRemoteEnv):
             tactile_shape=tactile_shape,
             max_episode_steps=max_episode_steps,
             render_mode=render_mode,
+            task_description=task_description,
         )
 
         # Override action space to 8D absolute joint targets + gripper command
@@ -532,6 +558,7 @@ def make_isaaclab_tactile_remote_env(
     server_host: str = "localhost",
     server_port: int = 5555,
     timeout_ms: int = 30000,
+    task_description: str = "pick and place",
     **kwargs,
 ) -> IsaacLabTactileRemoteEnv:
     """
@@ -541,6 +568,7 @@ def make_isaaclab_tactile_remote_env(
         server_host: Hostname/IP of IsaacLab server
         server_port: Port of IsaacLab server
         timeout_ms: Timeout for operations
+        task_description: Language task prompt passed to language-conditioned policies
         **kwargs: Additional arguments passed to env constructor
         
     Returns:
@@ -550,6 +578,7 @@ def make_isaaclab_tactile_remote_env(
         server_host=server_host,
         server_port=server_port,
         timeout_ms=timeout_ms,
+        task_description=task_description,
         **kwargs,
     )
 
@@ -558,6 +587,7 @@ def make_isaaclab_tactile_remote_joint_env(
     server_host: str = "localhost",
     server_port: int = 5555,
     timeout_ms: int = 30000,
+    task_description: str = "pick and place",
     **kwargs,
 ) -> IsaacLabTactileRemoteJointEnv:
     """Factory function for the joint-space remote IsaacLab tactile env."""
@@ -565,5 +595,6 @@ def make_isaaclab_tactile_remote_joint_env(
         server_host=server_host,
         server_port=server_port,
         timeout_ms=timeout_ms,
+        task_description=task_description,
         **kwargs,
     )
