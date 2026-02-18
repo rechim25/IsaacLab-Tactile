@@ -70,8 +70,8 @@ Train SmolVLA:
 conda activate smolvla
 
 lerobot-train \
-  --dataset.repo_id=pick_place_basket_joint_tacex_200_lerobot_v2 \
-  --dataset.root=/home/radu/IsaacLab-Tactile/lerobot/datasets/pick_place_basket_joint_tacex_200_lerobot_v2 \
+  --dataset.repo_id=pick_place_basket_joint_tacex_200_lerobot_v3 \
+  --dataset.root=/home/radu/IsaacLab-Tactile/lerobot/datasets/pick_place_basket_joint_tacex_200_lerobot_v3 \
   --policy.type=smolvla \
   --policy.device=cuda \
   --policy.vlm_model_name=HuggingFaceTB/SmolVLM2-500M-Video-Instruct \
@@ -80,10 +80,10 @@ lerobot-train \
   --policy.empty_cameras=1 \
   --batch_size=8 \
   --steps=20000 \
-  --output_dir=outputs/smolvla_joint_pick_place_basket_200_v2 \
+  --job_name "pick_place_joint_200_no_tactile_v3" \
+  --output_dir=outputs/smolvla_joint_pick_place_basket_200_v3 \
   --wandb.enable=true \
-  --wandb.project=smolvla-tactile \
-  --job_name joint_200_no_tactile_v2_run1
+  --wandb.project=smolvla-tactile
 ```
 
 Evaluation:
